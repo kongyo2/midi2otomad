@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { detectPitchYin, detectSamplePitch } from "./detect";
+import { midiToFrequency, pitchRatio } from "./pitch";
 import type { PcmAudio } from "../audio/mixer";
 
 function sine(frequencyHz: number, sampleRate: number, length: number, amplitude = 0.8): Float32Array {
@@ -57,6 +58,13 @@ describe("detectPitchYin", () => {
 
   it("returns null for a silent frame", () => {
     expect(detectPitchYin(new Float32Array(2048), 44100)).toBeNull();
+  });
+
+  it("rejects a fundamental above maxFrequency instead of reporting an octave-down alias", () => {
+    const sampleRate = 44100;
+    // 3 kHz is above the default ~2093 Hz ceiling; its period is below the lag
+    // range, so without a guard YIN would lock onto the in-range 1.5 kHz alias.
+    expect(detectPitchYin(sine(3000, sampleRate, 4096), sampleRate)).toBeNull();
   });
 
   it("returns null for a frame too short for the search range", () => {
@@ -118,15 +126,16 @@ describe("detectSamplePitch", () => {
     expect(est!.probability).toBeGreaterThan(0.9);
   });
 
-  it("reports the residual detuning in cents for an off-center tone", () => {
+  it("stores a tuning correction that retunes an off-center sample onto its base note", () => {
     const sampleRate = 44100;
     const frames = sampleRate;
-    // 256 Hz sits ~38 cents flat of C4 (261.63 Hz, MIDI 60).
+    // 256 Hz is ~38 cents flat of C4 (MIDI 60). pitchRatio adds tuneCents, so
+    // playing the base note must pull the sample up onto C4, not further flat.
     const pcm: PcmAudio = { sampleRate, channels: [sine(256, sampleRate, frames)], frames };
-    const est = detectSamplePitch(pcm);
-    expect(est!.basePitch).toBe(60);
-    expect(est!.tuneCents).toBeLessThan(-30);
-    expect(est!.tuneCents).toBeGreaterThan(-45);
+    const est = detectSamplePitch(pcm)!;
+    expect(est.basePitch).toBe(60);
+    const playedHz = 256 * pitchRatio(est.basePitch, est.basePitch, est.tuneCents);
+    expect(Math.abs(centsOff(playedHz, midiToFrequency(est.basePitch)))).toBeLessThan(5);
   });
 
   it("returns null when there are no channels", () => {
@@ -184,11 +193,20 @@ describe("detectSamplePitch", () => {
     expect(est!.basePitch).toBe(69);
   });
 
-  it("mixes channels so a right-panned (left-silent) stereo tone is detected", () => {
+  it("analyzes the loudest channel so a right-panned (left-silent) stereo tone is detected", () => {
     const sampleRate = 44100;
     const frames = sampleRate;
     const left = new Float32Array(frames);
     const right = sine(440, sampleRate, frames);
+    const est = detectSamplePitch({ sampleRate, channels: [left, right], frames });
+    expect(est!.basePitch).toBe(69);
+  });
+
+  it("detects phase-inverted stereo (L = -R) instead of cancelling it to silence", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    const left = sine(440, sampleRate, frames);
+    const right = left.map((v) => -v);
     const est = detectSamplePitch({ sampleRate, channels: [left, right], frames });
     expect(est!.basePitch).toBe(69);
   });

@@ -122,6 +122,13 @@ export function detectPitchYin(
   }
 
   const cmndf = cumulativeMeanNormalizedDifference(frame, tauMax);
+  for (let t = 2; t < tauMin; t += 1) {
+    if (cmndf[t]! < threshold) {
+      // A strong period below the minimum lag means the fundamental is above
+      // maxFrequency; reject rather than locking onto an octave-down alias.
+      return null;
+    }
+  }
   const tau = pickTau(cmndf, threshold, tauMin, searchEnd);
   if (!Number.isFinite(cmndf[tau]!)) {
     // A constant/DC frame yields an all-zero difference function, normalizing to
@@ -145,17 +152,29 @@ function median(values: number[]): number {
   return sorted[sorted.length >> 1]!;
 }
 
-function toMono(channels: Float32Array[], frames: number): Float32Array {
-  if (channels.length === 1) {
-    return channels[0]!;
+function channelEnergy(channel: Float32Array): number {
+  let energy = 0;
+  for (let i = 0; i < channel.length; i += 1) {
+    energy += channel[i]! * channel[i]!;
   }
-  const mono = new Float32Array(frames);
-  for (const channel of channels) {
-    for (let i = 0; i < frames; i += 1) {
-      mono[i]! += channel[i]! / channels.length;
+  return energy;
+}
+
+/**
+ * Pick the highest-energy channel rather than a signed average, which keeps
+ * hard-panned material and avoids cancelling phase-inverted stereo to silence.
+ */
+function loudestChannel(channels: Float32Array[]): Float32Array {
+  let best = channels[0]!;
+  let bestEnergy = channelEnergy(best);
+  for (let c = 1; c < channels.length; c += 1) {
+    const energy = channelEnergy(channels[c]!);
+    if (energy > bestEnergy) {
+      best = channels[c]!;
+      bestEnergy = energy;
     }
   }
-  return mono;
+  return best;
 }
 
 /**
@@ -170,7 +189,7 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
   if (first === undefined || first.length === 0) {
     return null;
   }
-  const channel = toMono(pcm.channels, first.length);
+  const channel = loudestChannel(pcm.channels);
   const minFrequency = options.minFrequency ?? DEFAULT_MIN_FREQUENCY;
   const minProbability = options.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const maxScanFrames = options.maxScanFrames ?? DEFAULT_MAX_SCAN_FRAMES;
@@ -209,7 +228,9 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
 
   const midi = weightedMidi / weight;
   const basePitch = Math.max(MIDI_MIN, Math.min(MIDI_MAX, Math.round(midi)));
-  const tuneCents = Math.round((midi - basePitch) * 100);
+  // Playback adds tuneCents in pitchRatio, so store the correction that pulls
+  // the sample onto basePitch (positive when the sample is flat of that note).
+  const tuneCents = Math.round((basePitch - midi) * 100);
   return {
     frequencyHz: midiToFrequency(midi),
     midi,
