@@ -4,7 +4,102 @@ import { Waveform } from "./Waveform";
 import { midiToNoteName } from "../../../shared/music/pitch";
 import { formatDb } from "../util/format";
 import { previewSample } from "../audio/preview";
-import type { Sample } from "../../../shared/schemas/project";
+import {
+  FILTER_TYPES,
+  LFO_SHAPES,
+  type Envelope,
+  type Filter,
+  type FilterType,
+  type InterpolationMode,
+  type LfoShape,
+  type PitchMod,
+  type Sample,
+} from "../../../shared/schemas/project";
+
+type NumericKeys<T> = Extract<{ [K in keyof T]: T[K] extends number ? K : never }[keyof T], string>;
+
+interface NumField<T> {
+  key: NumericKeys<T>;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  display: (value: number) => string;
+}
+
+const ms = (value: number): string => `${value.toFixed(0)} ms`;
+
+const ENVELOPE_FIELDS: NumField<Envelope>[] = [
+  { key: "delayMs", label: "ディレイ", min: 0, max: 2000, step: 1, display: ms },
+  { key: "attackMs", label: "アタック", min: 0, max: 2000, step: 1, display: ms },
+  { key: "holdMs", label: "ホールド", min: 0, max: 2000, step: 1, display: ms },
+  { key: "decayMs", label: "ディケイ", min: 0, max: 4000, step: 1, display: ms },
+  { key: "sustain", label: "サステイン", min: 0, max: 1, step: 0.01, display: (v) => `${Math.round(v * 100)}%` },
+  { key: "releaseMs", label: "リリース", min: 0, max: 8000, step: 1, display: ms },
+  { key: "attackCurve", label: "アタックカーブ", min: -8, max: 8, step: 0.1, display: (v) => v.toFixed(1) },
+  { key: "decayCurve", label: "ディケイカーブ", min: -8, max: 8, step: 0.1, display: (v) => v.toFixed(1) },
+  { key: "releaseCurve", label: "リリースカーブ", min: -8, max: 8, step: 0.1, display: (v) => v.toFixed(1) },
+];
+
+const FILTER_FIELDS: NumField<Filter>[] = [
+  { key: "cutoffHz", label: "カットオフ", min: 20, max: 20000, step: 1, display: (v) => `${v.toFixed(0)} Hz` },
+  { key: "q", label: "レゾナンス", min: 0.1, max: 24, step: 0.1, display: (v) => `Q ${v.toFixed(2)}` },
+  { key: "gainDb", label: "フィルターゲイン", min: -24, max: 24, step: 0.5, display: (v) => `${v.toFixed(1)} dB` },
+];
+
+const PITCH_FIELDS: NumField<PitchMod>[] = [
+  { key: "glideSemitones", label: "グライド量", min: -36, max: 36, step: 1, display: (v) => `${v.toFixed(0)} st` },
+  { key: "glideMs", label: "グライド時間", min: 0, max: 4000, step: 1, display: ms },
+  { key: "vibratoCents", label: "ビブラート深さ", min: 0, max: 600, step: 1, display: (v) => `${v.toFixed(0)} cent` },
+  { key: "vibratoHz", label: "ビブラート速度", min: 0, max: 16, step: 0.1, display: (v) => `${v.toFixed(1)} Hz` },
+  { key: "vibratoDelayMs", label: "ビブラート遅延", min: 0, max: 2000, step: 1, display: ms },
+];
+
+const FILTER_LABELS: Record<FilterType, string> = {
+  lowpass: "ローパス",
+  highpass: "ハイパス",
+  bandpass: "バンドパス",
+  notch: "ノッチ",
+  peaking: "ピーキング",
+  lowshelf: "ローシェルフ",
+  highshelf: "ハイシェルフ",
+  allpass: "オールパス",
+};
+
+const SHAPE_LABELS: Record<LfoShape, string> = {
+  sine: "サイン",
+  triangle: "三角",
+  square: "矩形",
+  saw: "ノコギリ",
+};
+
+function RangeField<T>({
+  field,
+  value,
+  onChange,
+}: {
+  field: NumField<T>;
+  value: number;
+  onChange: (key: NumericKeys<T>, value: number) => void;
+}): React.JSX.Element {
+  return (
+    <label className="field">
+      <span className="field__label">
+        {field.label} <em>{field.display(value)}</em>
+      </span>
+      <input
+        className="range"
+        type="range"
+        aria-label={field.label}
+        min={field.min}
+        max={field.max}
+        step={field.step}
+        value={value}
+        onChange={(event) => onChange(field.key, Number(event.target.value))}
+      />
+    </label>
+  );
+}
 
 export function SampleInspector(): React.JSX.Element {
   const { project, selectedSampleId, updateSample, getPeaks, getAudio } = useStudio();
@@ -31,6 +126,13 @@ export function SampleInspector(): React.JSX.Element {
       previewSample(pcm, sample);
     }
   };
+
+  const setEnvelope = (key: NumericKeys<Envelope>, value: number): void =>
+    updateSample(sample.id, { envelope: { ...sample.envelope, [key]: value } });
+  const setFilter = (key: NumericKeys<Filter>, value: number): void =>
+    updateSample(sample.id, { filter: { ...sample.filter, [key]: value } });
+  const setPitch = (key: NumericKeys<PitchMod>, value: number): void =>
+    updateSample(sample.id, { pitchMod: { ...sample.pitchMod, [key]: value } });
 
   return (
     <section className="panel">
@@ -60,6 +162,7 @@ export function SampleInspector(): React.JSX.Element {
           <input
             className="range"
             type="range"
+            aria-label="基準ピッチ"
             min={24}
             max={96}
             value={sample.basePitch}
@@ -73,6 +176,7 @@ export function SampleInspector(): React.JSX.Element {
           <input
             className="range"
             type="range"
+            aria-label="微調整"
             min={-100}
             max={100}
             value={sample.tuneCents}
@@ -81,52 +185,101 @@ export function SampleInspector(): React.JSX.Element {
         </label>
       </div>
 
-      <label className="field">
-        <span className="field__label">
-          ゲイン <em>{formatDb(sample.gain)}</em>
-        </span>
-        <input
-          className="range"
-          type="range"
-          min={0}
-          max={4}
-          step={0.01}
-          value={sample.gain}
-          onChange={(event) => updateSample(sample.id, { gain: Number(event.target.value) })}
-        />
-      </label>
-
-      <h3 className="subheading">エンベロープ</h3>
       <div className="grid2">
         <label className="field">
           <span className="field__label">
-            アタック <em>{sample.envelope.attackMs.toFixed(0)} ms</em>
+            ゲイン <em>{formatDb(sample.gain)}</em>
           </span>
           <input
             className="range"
             type="range"
+            aria-label="ゲイン"
             min={0}
-            max={1000}
-            value={sample.envelope.attackMs}
-            onChange={(event) =>
-              updateSample(sample.id, { envelope: { ...sample.envelope, attackMs: Number(event.target.value) } })
-            }
+            max={4}
+            step={0.01}
+            value={sample.gain}
+            onChange={(event) => updateSample(sample.id, { gain: Number(event.target.value) })}
           />
         </label>
         <label className="field">
-          <span className="field__label">
-            リリース <em>{sample.envelope.releaseMs.toFixed(0)} ms</em>
-          </span>
+          <span className="field__label">補間方式</span>
+          <select
+            className="select"
+            aria-label="補間方式"
+            value={sample.interpolation}
+            onChange={(event) => updateSample(sample.id, { interpolation: event.target.value as InterpolationMode })}
+          >
+            <option value="hermite">エルミート（高品質）</option>
+            <option value="linear">リニア（軽量）</option>
+          </select>
+        </label>
+      </div>
+
+      <h3 className="subheading">エンベロープ (DAHDSR)</h3>
+      <div className="grid2">
+        {ENVELOPE_FIELDS.map((field) => (
+          <RangeField key={field.key} field={field} value={sample.envelope[field.key]} onChange={setEnvelope} />
+        ))}
+      </div>
+
+      <h3 className="subheading">音色フィルター</h3>
+      <div className="grid2">
+        <label className="checkline">
           <input
-            className="range"
-            type="range"
-            min={0}
-            max={4000}
-            value={sample.envelope.releaseMs}
+            type="checkbox"
+            aria-label="フィルター"
+            checked={sample.filter.enabled}
             onChange={(event) =>
-              updateSample(sample.id, { envelope: { ...sample.envelope, releaseMs: Number(event.target.value) } })
+              updateSample(sample.id, { filter: { ...sample.filter, enabled: event.target.checked } })
             }
           />
+          有効
+        </label>
+        <label className="field">
+          <span className="field__label">タイプ</span>
+          <select
+            className="select"
+            aria-label="フィルタータイプ"
+            value={sample.filter.type}
+            onChange={(event) =>
+              updateSample(sample.id, { filter: { ...sample.filter, type: event.target.value as FilterType } })
+            }
+          >
+            {FILTER_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {FILTER_LABELS[type]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {FILTER_FIELDS.map((field) => (
+          <RangeField key={field.key} field={field} value={sample.filter[field.key]} onChange={setFilter} />
+        ))}
+      </div>
+
+      <h3 className="subheading">ダイナミックピッチ</h3>
+      <div className="grid2">
+        {PITCH_FIELDS.map((field) => (
+          <RangeField key={field.key} field={field} value={sample.pitchMod[field.key]} onChange={setPitch} />
+        ))}
+        <label className="field">
+          <span className="field__label">波形</span>
+          <select
+            className="select"
+            aria-label="ビブラート波形"
+            value={sample.pitchMod.vibratoShape}
+            onChange={(event) =>
+              updateSample(sample.id, {
+                pitchMod: { ...sample.pitchMod, vibratoShape: event.target.value as LfoShape },
+              })
+            }
+          >
+            {LFO_SHAPES.map((shape) => (
+              <option key={shape} value={shape}>
+                {SHAPE_LABELS[shape]}
+              </option>
+            ))}
+          </select>
         </label>
       </div>
     </section>

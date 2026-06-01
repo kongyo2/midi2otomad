@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { Sample } from "../../../shared/schemas/project";
+import { SampleSchema } from "../../../shared/schemas/project";
 import type { PcmAudio } from "../../../shared/audio/mixer";
 
 const ctx = vi.hoisted(() => {
@@ -17,12 +17,20 @@ const ctx = vi.hoisted(() => {
     gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
     connect: vi.fn(),
   });
+  const makeFilter = () => ({
+    type: "",
+    frequency: { value: 0 },
+    Q: { value: 0 },
+    gain: { value: 0 },
+    connect: vi.fn(),
+  });
   return {
     currentTime: 10,
     destination: { id: "destination" },
     createBuffer: vi.fn(() => ({ copyToChannel: vi.fn() })),
     createBufferSource: vi.fn(makeSource),
     createGain: vi.fn(makeGain),
+    createBiquadFilter: vi.fn(makeFilter),
   };
 });
 
@@ -30,25 +38,19 @@ vi.mock("./context", () => ({ getAudioContext: () => ctx, resumeAudioContext: vi
 
 import { previewSample } from "./preview";
 
-function sample(over: Partial<Sample> = {}): Sample {
-  return {
-    id: "s1",
-    name: "s",
-    fileName: "",
-    basePitch: 60,
-    tuneCents: 0,
-    gain: 0.8,
-    durationSec: 1,
-    loop: { enabled: false, startSec: 0, endSec: 0 },
-    envelope: { attackMs: 5, releaseMs: 120 },
-    ...over,
-  };
+function sample(over: Record<string, unknown> = {}): ReturnType<typeof SampleSchema.parse> {
+  return SampleSchema.parse({ id: "s1", name: "s", gain: 0.8, durationSec: 1, ...over });
 }
 
 const pcm: PcmAudio = { sampleRate: 1000, channels: [new Float32Array(1000), new Float32Array(1000)], frames: 1000 };
 
 function lastSource(): ReturnType<typeof ctx.createBufferSource> {
   const results = ctx.createBufferSource.mock.results;
+  return results[results.length - 1]!.value;
+}
+
+function lastGain(): ReturnType<typeof ctx.createGain> {
+  const results = ctx.createGain.mock.results;
   return results[results.length - 1]!.value;
 }
 
@@ -83,5 +85,22 @@ describe("previewSample", () => {
     expect(source.loop).toBe(false);
     expect(source.start).toHaveBeenCalledWith(10);
     expect(source.connect).toHaveBeenCalled();
+  });
+
+  it("shapes the preview gain toward the sustain level", () => {
+    previewSample(pcm, sample({ gain: 0.8, envelope: { attackMs: 5, decayMs: 50, sustain: 0.5, releaseMs: 100 } }));
+    const ramps = lastGain().gain.linearRampToValueAtTime.mock.calls.map((call) => call[0]);
+    expect(ramps).toContainEqual(expect.closeTo(0.8, 6));
+    expect(ramps).toContainEqual(expect.closeTo(0.4, 6));
+  });
+
+  it("routes through a biquad filter when the sample filter is enabled", () => {
+    previewSample(pcm, sample({ filter: { enabled: true, type: "highpass", cutoffHz: 800, q: 2, gainDb: 3 } }));
+    expect(ctx.createBiquadFilter).toHaveBeenCalledTimes(1);
+    const filter = ctx.createBiquadFilter.mock.results.at(-1)!.value;
+    expect(filter.type).toBe("highpass");
+    expect(filter.frequency.value).toBe(800);
+    expect(filter.Q.value).toBe(2);
+    expect(lastSource().connect).toHaveBeenCalledWith(filter);
   });
 });

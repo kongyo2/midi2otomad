@@ -22,17 +22,39 @@ export function previewSample(pcm: PcmAudio, sample: Sample, pitch?: number): vo
   }
 
   const gain = ctx.createGain();
+  const env = sample.envelope;
   const now = ctx.currentTime;
-  const attack = Math.max(0.001, sample.envelope.attackMs / 1000);
-  const release = Math.max(0.001, sample.envelope.releaseMs / 1000);
-  const hold = sample.loop.enabled ? 1.4 : Math.min(2.2, fullLength);
-  gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(sample.gain, now + attack);
-  gain.gain.setValueAtTime(sample.gain, now + hold);
-  gain.gain.linearRampToValueAtTime(0, now + hold + release);
+  const peak = sample.gain;
+  const sustainLevel = peak * env.sustain;
+  const onset = now + env.delayMs / 1000;
+  const attack = Math.max(0.001, env.attackMs / 1000);
+  const hold = env.holdMs / 1000;
+  const decay = env.decayMs / 1000;
+  const release = Math.max(0.001, env.releaseMs / 1000);
+  const sustainHold = sample.loop.enabled ? 1.4 : Math.min(2.2, fullLength);
 
-  source.connect(gain);
+  const decayEnd = onset + attack + hold + decay;
+  const sustainEnd = decayEnd + sustainHold;
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.setValueAtTime(0, onset);
+  gain.gain.linearRampToValueAtTime(peak, onset + attack);
+  gain.gain.setValueAtTime(peak, onset + attack + hold);
+  gain.gain.linearRampToValueAtTime(sustainLevel, decayEnd);
+  gain.gain.setValueAtTime(sustainLevel, sustainEnd);
+  gain.gain.linearRampToValueAtTime(0, sustainEnd + release);
+
+  if (sample.filter.enabled) {
+    const filter = ctx.createBiquadFilter();
+    filter.type = sample.filter.type;
+    filter.frequency.value = sample.filter.cutoffHz;
+    filter.Q.value = sample.filter.q;
+    filter.gain.value = sample.filter.gainDb;
+    source.connect(filter);
+    filter.connect(gain);
+  } else {
+    source.connect(gain);
+  }
   gain.connect(ctx.destination);
   source.start(now);
-  source.stop(now + hold + release + 0.05);
+  source.stop(sustainEnd + release + 0.05);
 }

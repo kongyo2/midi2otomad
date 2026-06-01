@@ -13,6 +13,7 @@ vi.mock("./components/SampleLibrary", () => ({ SampleLibrary: () => <div data-te
 vi.mock("./components/SampleInspector", () => ({ SampleInspector: () => <div data-testid="inspector" /> }));
 vi.mock("./components/Timeline", () => ({ Timeline: () => <div data-testid="timeline" /> }));
 vi.mock("./components/TrackInspector", () => ({ TrackInspector: () => <div data-testid="trackinspector" /> }));
+vi.mock("./components/ReverbPanel", () => ({ ReverbPanel: () => <div data-testid="reverb" /> }));
 vi.mock("./components/HelpPanel", () => ({ HelpPanel: () => <div data-testid="help" /> }));
 
 import { App } from "./App";
