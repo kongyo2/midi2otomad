@@ -7,11 +7,13 @@ import type { PcmAudio } from "../../../shared/audio/mixer";
 
 const holder = vi.hoisted(() => ({ value: null as StudioContextValue | null }));
 const previewSample = vi.hoisted(() => vi.fn());
+const detectSamplePitch = vi.hoisted(() => vi.fn());
 
 vi.mock("../state/StudioContext", () => ({
   useStudio: () => holder.value,
 }));
 vi.mock("../audio/preview", () => ({ previewSample }));
+vi.mock("../../../shared/music/detect", () => ({ detectSamplePitch }));
 vi.mock("./Waveform", () => ({ Waveform: () => <div data-testid="waveform" /> }));
 
 import { SampleInspector } from "./SampleInspector";
@@ -40,6 +42,7 @@ function withSample(over: Record<string, unknown> = {}): StudioContextValue {
 beforeEach(() => {
   holder.value = makeStudioValue();
   previewSample.mockClear();
+  detectSamplePitch.mockReset();
 });
 
 describe("SampleInspector", () => {
@@ -86,6 +89,77 @@ describe("SampleInspector", () => {
     render(<SampleInspector />);
     fireEvent.click(screen.getByText("▶ 試聴"));
     expect(previewSample).not.toHaveBeenCalled();
+  });
+
+  it("auto-detects the base pitch and tuning from decoded audio", () => {
+    const pcm: PcmAudio = { sampleRate: 48000, channels: [new Float32Array(4)], frames: 4 };
+    const value = withSample();
+    value.getAudio = vi.fn(() => pcm);
+    holder.value = value;
+    detectSamplePitch.mockReturnValue({
+      frequencyHz: 392,
+      midi: 67.12,
+      basePitch: 67,
+      tuneCents: 12,
+      probability: 0.95,
+      voicedFrames: 40,
+    });
+    render(<SampleInspector />);
+
+    fireEvent.click(screen.getByText(/自動検出/));
+
+    expect(detectSamplePitch).toHaveBeenCalledWith(pcm);
+    expect(value.updateSample).toHaveBeenCalledWith("s1", { basePitch: 67, tuneCents: 12 });
+    expect(value.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels a flat (negative cents) detection without a plus sign", () => {
+    const pcm: PcmAudio = { sampleRate: 48000, channels: [new Float32Array(4)], frames: 4 };
+    const value = withSample();
+    value.getAudio = vi.fn(() => pcm);
+    holder.value = value;
+    detectSamplePitch.mockReturnValue({
+      frequencyHz: 256,
+      midi: 59.62,
+      basePitch: 60,
+      tuneCents: -38,
+      probability: 0.9,
+      voicedFrames: 30,
+    });
+    render(<SampleInspector />);
+
+    fireEvent.click(screen.getByText(/自動検出/));
+
+    expect(value.updateSample).toHaveBeenCalledWith("s1", { basePitch: 60, tuneCents: -38 });
+    expect(value.showToast).toHaveBeenCalledWith(expect.stringContaining("-38 cent"));
+    expect(value.showToast).not.toHaveBeenCalledWith(expect.stringContaining("+-"));
+  });
+
+  it("warns and does not change the sample when no audio is decoded", () => {
+    const value = withSample();
+    value.getAudio = vi.fn(() => undefined);
+    holder.value = value;
+    render(<SampleInspector />);
+
+    fireEvent.click(screen.getByText(/自動検出/));
+
+    expect(detectSamplePitch).not.toHaveBeenCalled();
+    expect(value.updateSample).not.toHaveBeenCalled();
+    expect(value.showToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns and does not change the sample when no pitch is found", () => {
+    const pcm: PcmAudio = { sampleRate: 48000, channels: [new Float32Array(4)], frames: 4 };
+    const value = withSample();
+    value.getAudio = vi.fn(() => pcm);
+    holder.value = value;
+    detectSamplePitch.mockReturnValue(null);
+    render(<SampleInspector />);
+
+    fireEvent.click(screen.getByText(/自動検出/));
+
+    expect(value.updateSample).not.toHaveBeenCalled();
+    expect(value.showToast).toHaveBeenCalledTimes(1);
   });
 
   it("toggles the loop and resets it to the full sample", () => {

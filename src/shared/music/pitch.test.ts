@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { midiToNoteName, noteNameToMidi, pitchRatio, semitonesToRatio } from "./pitch";
+import {
+  frequencyToMidi,
+  midiToFrequency,
+  midiToNoteName,
+  noteNameToMidi,
+  pitchRatio,
+  semitonesToRatio,
+} from "./pitch";
 
 describe("semitonesToRatio", () => {
   it("maps 12 semitones to one octave (2x)", () => {
@@ -54,6 +61,36 @@ describe("midiToNoteName", () => {
   it("rounds fractional midi numbers", () => {
     expect(midiToNoteName(60.4)).toBe("C4");
     expect(midiToNoteName(60.6)).toBe("C#4");
+  });
+});
+
+describe("frequencyToMidi", () => {
+  it("maps concert A (440 Hz) to MIDI 69", () => {
+    expect(frequencyToMidi(440)).toBeCloseTo(69, 9);
+  });
+
+  it("maps one octave up to twelve semitones up", () => {
+    expect(frequencyToMidi(880)).toBeCloseTo(81, 9);
+  });
+
+  it("maps one octave down to twelve semitones down", () => {
+    expect(frequencyToMidi(220)).toBeCloseTo(57, 9);
+  });
+});
+
+describe("midiToFrequency", () => {
+  it("maps MIDI 69 to concert A (440 Hz)", () => {
+    expect(midiToFrequency(69)).toBeCloseTo(440, 9);
+  });
+
+  it("maps twelve semitones up to one octave up", () => {
+    expect(midiToFrequency(81)).toBeCloseTo(880, 9);
+  });
+
+  it("round-trips with frequencyToMidi across the range", () => {
+    for (let midi = 24; midi <= 108; midi += 1) {
+      expect(frequencyToMidi(midiToFrequency(midi))).toBeCloseTo(midi, 9);
+    }
   });
 });
 

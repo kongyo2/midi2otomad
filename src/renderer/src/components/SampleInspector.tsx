@@ -2,12 +2,13 @@ import { useRef } from "react";
 import { useStudio } from "../state/StudioContext";
 import { Waveform } from "./Waveform";
 import { midiToNoteName } from "../../../shared/music/pitch";
+import { detectSamplePitch } from "../../../shared/music/detect";
 import { formatDb } from "../util/format";
 import { previewSample } from "../audio/preview";
 import type { Sample } from "../../../shared/schemas/project";
 
 export function SampleInspector(): React.JSX.Element {
-  const { project, selectedSampleId, updateSample, getPeaks, getAudio } = useStudio();
+  const { project, selectedSampleId, updateSample, getPeaks, getAudio, showToast } = useStudio();
   const sample = project.samples.find((item) => item.id === selectedSampleId);
 
   if (sample === undefined) {
@@ -30,6 +31,25 @@ export function SampleInspector(): React.JSX.Element {
     if (pcm !== undefined) {
       previewSample(pcm, sample);
     }
+  };
+
+  const onDetectPitch = (): void => {
+    const pcm = getAudio(sample.id);
+    if (pcm === undefined) {
+      showToast("音声がまだデコードされていません");
+      return;
+    }
+    const estimate = detectSamplePitch(pcm);
+    if (estimate === null) {
+      showToast("ピッチを検出できませんでした");
+      return;
+    }
+    updateSample(sample.id, { basePitch: estimate.basePitch, tuneCents: estimate.tuneCents });
+    const sign = estimate.tuneCents >= 0 ? "+" : "";
+    const confidence = Math.round(estimate.probability * 100);
+    showToast(
+      `ピッチを検出: ${midiToNoteName(estimate.basePitch)} ${sign}${estimate.tuneCents} cent（確度 ${confidence}%）`,
+    );
   };
 
   return (
@@ -56,6 +76,9 @@ export function SampleInspector(): React.JSX.Element {
         <label className="field">
           <span className="field__label">
             基準ピッチ <em>{midiToNoteName(sample.basePitch)}</em>
+            <button type="button" className="linkbtn" onClick={onDetectPitch}>
+              🎯 自動検出
+            </button>
           </span>
           <input
             className="range"

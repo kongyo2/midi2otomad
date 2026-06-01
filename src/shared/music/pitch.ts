@@ -12,6 +12,19 @@ export function pitchRatio(notePitch: number, basePitch: number, tuneCents = 0):
   return semitonesToRatio(notePitch - basePitch + tuneCents / 100);
 }
 
+const A4_MIDI = 69;
+const A4_HZ = 440;
+
+/** Convert a frequency in Hz to a fractional MIDI note number (A4 = 440 Hz = 69). */
+export function frequencyToMidi(frequencyHz: number): number {
+  return A4_MIDI + 12 * Math.log2(frequencyHz / A4_HZ);
+}
+
+/** Convert a fractional MIDI note number to its frequency in Hz. */
+export function midiToFrequency(midi: number): number {
+  return A4_HZ * Math.pow(2, (midi - A4_MIDI) / 12);
+}
+
 export function midiToNoteName(midi: number): string {
   const clamped = Math.max(0, Math.min(127, Math.round(midi)));
   const name = NOTE_NAMES[clamped % 12]!;
