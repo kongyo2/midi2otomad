@@ -193,14 +193,17 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
   const minProbability = options.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const maxScanFrames = options.maxScanFrames ?? DEFAULT_MAX_SCAN_FRAMES;
   const frameSize = Math.min(channel.length, frameSizeFor(pcm.sampleRate, EDITABLE_FLOOR_HZ));
-  // Widen the hop on long clips so the loop scans at most ~maxScanFrames frames,
-  // bounding work even when the audio is entirely silent or unpitched.
+  // Widen the hop on long clips so the loop scans fewer frames, but never beyond
+  // one frame: a hop larger than the window would leave unscanned gaps that skip
+  // short notes. Coverage stays gap-free; work is bounded by capping the scanned
+  // span (below) instead, even when the audio is entirely silent or unpitched.
   const span = channel.length - frameSize;
-  const hop = Math.max(1, frameSize >> 2, Math.ceil(span / maxScanFrames));
+  const hop = Math.min(frameSize, Math.max(1, frameSize >> 2, Math.ceil(span / maxScanFrames)));
+  const scanEnd = Math.min(channel.length, frameSize + hop * (maxScanFrames - 1));
 
   const midis: number[] = [];
   const probabilities: number[] = [];
-  for (let start = 0; start + frameSize <= channel.length; start += hop) {
+  for (let start = 0; start + frameSize <= scanEnd; start += hop) {
     const frame = channel.subarray(start, start + frameSize);
     const estimate = detectPitchYin(frame, pcm.sampleRate, options);
     if (estimate === null || estimate.probability < minProbability) {
@@ -227,8 +230,9 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
 
   const midi = weightedMidi / weight;
   const basePitch = Math.round(midi);
-  if (basePitch < DETECTABLE_MIDI_LOW) {
-    // Below C1 — outside the editable range; report no pitch rather than C1.
+  if (basePitch < DETECTABLE_MIDI_LOW || basePitch > DETECTABLE_MIDI_HIGH) {
+    // Outside the editable MIDI range (C1–C7); report no pitch rather than a
+    // base pitch the inspector's slider cannot represent.
     return null;
   }
   // Playback adds tuneCents in pitchRatio, so store the correction that pulls

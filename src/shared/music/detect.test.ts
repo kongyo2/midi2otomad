@@ -203,14 +203,40 @@ describe("detectSamplePitch", () => {
     expect(est!.basePitch).toBe(31);
   });
 
+  it("returns null above the editable pitch ceiling instead of an uneditable basePitch", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    // ~2200 Hz refines just above C7 (MIDI 96.85, rounding to 97), beyond the
+    // inspector's editable max of MIDI 96; report no pitch rather than a base
+    // pitch the slider cannot represent.
+    const pcm: PcmAudio = { sampleRate, channels: [sine(2200, sampleRate, frames)], frames };
+    expect(detectSamplePitch(pcm)).toBeNull();
+  });
+
   it("bounds the number of analyzed frames with an adaptive hop, even for unpitched clips", () => {
     const sampleRate = 44100;
     const frames = sampleRate;
     const pcm: PcmAudio = { sampleRate, channels: [sine(440, sampleRate, frames)], frames };
-    // maxScanFrames 8 widens the hop so only 8 frames are scanned across the
-    // whole clip, bounding work regardless of how many frames turn out voiced.
+    // maxScanFrames 8 widens the hop (capped at the frame size) so at most 8
+    // contiguous frames are scanned, bounding work regardless of how many
+    // frames turn out voiced.
     const est = detectSamplePitch(pcm, { maxScanFrames: 8 });
     expect(est!.voicedFrames).toBe(8);
+    expect(est!.basePitch).toBe(69);
+  });
+
+  it("scans contiguous windows so a note between widened hops is not skipped", () => {
+    const sampleRate = 44100;
+    const frames = 4 * sampleRate;
+    const channel = new Float32Array(frames);
+    const noteStart = 8000;
+    const noteLen = Math.floor(0.3 * sampleRate);
+    channel.set(sine(440, sampleRate, noteLen), noteStart);
+    // maxScanFrames 8 would widen the hop past the ~4096-sample frame, leaving
+    // ~0.4s gaps; this clear note sits entirely within such a gap and must
+    // still be found rather than skipped between two sampled windows.
+    const est = detectSamplePitch({ sampleRate, channels: [channel], frames }, { maxScanFrames: 8 });
+    expect(est).not.toBeNull();
     expect(est!.basePitch).toBe(69);
   });
 
