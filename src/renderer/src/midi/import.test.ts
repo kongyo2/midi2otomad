@@ -99,6 +99,25 @@ describe("midiToProject", () => {
     expect(result.project.bpm).toBe(100);
   });
 
+  it("preserves per-track reverb sends across a re-import", () => {
+    const previous: Project = parseProject({
+      version: 1,
+      name: "prev",
+      reverb: { enabled: true, wet: 0.5 },
+      tracks: [
+        { id: "old", name: "lead", midiIndex: 0, reverbSend: 0.6, notes: [] },
+        { id: "manual", name: "no-midi", reverbSend: 0.9, notes: [] },
+      ],
+    });
+
+    const midi = new Midi();
+    const track = midi.addTrack();
+    track.addNote({ midi: 60, time: 0, duration: 0.5, velocity: 0.8 });
+
+    const result = midiToProject(bytesOf(midi), "again.mid", previous);
+    expect(result.project.tracks[0]!.reverbSend).toBe(0.6);
+  });
+
   it("falls back to the default tempo without a header tempo or previous project", () => {
     const midi = new Midi();
     const track = midi.addTrack();

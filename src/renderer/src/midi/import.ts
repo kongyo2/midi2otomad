@@ -39,6 +39,12 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
   const header = midi.header;
   const previousSamples = previous?.samples ?? [];
   const fallbackSampleId = previousSamples[0]?.id ?? null;
+  const previousSends = new Map<number, number>();
+  for (const track of previous?.tracks ?? []) {
+    if (track.midiIndex !== undefined) {
+      previousSends.set(track.midiIndex, track.reverbSend);
+    }
+  }
 
   let colorIndex = 0;
   let noteCount = 0;
@@ -79,6 +85,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         noteSampleMap: {},
         notes,
         dynamics: { volume, expression },
+        reverbSend: previousSends.get(index) ?? 0,
       };
     });
 

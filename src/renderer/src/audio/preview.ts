@@ -1,56 +1,41 @@
-import type { Sample } from "../../../shared/schemas/project";
-import type { PcmAudio } from "../../../shared/audio/mixer";
-import { pitchRatio } from "../../../shared/music/pitch";
-import { envelopeLevel } from "../../../shared/audio/envelope";
+import { parseProject, type Sample } from "../../../shared/schemas/project";
+import { bankFromRecord, mixProject, type PcmAudio } from "../../../shared/audio/mixer";
 import { getAudioContext, resumeAudioContext } from "./context";
 
-/** Audition a single material one-shot at the given pitch (defaults to base pitch). */
+/**
+ * Audition a single material one-shot by rendering it through the very same
+ * offline engine used for playback and export. The envelope, dynamic pitch and
+ * filter — including their envelope/LFO modulation — therefore sound exactly as
+ * they will in the rendered mix, with no preview-only signal path to drift out
+ * of sync.
+ */
 export function previewSample(pcm: PcmAudio, sample: Sample, pitch?: number): void {
   const ctx = getAudioContext();
   void resumeAudioContext();
-  const buffer = ctx.createBuffer(pcm.channels.length, pcm.frames, pcm.sampleRate);
-  pcm.channels.forEach((channel, index) => buffer.copyToChannel(channel as Float32Array<ArrayBuffer>, index));
+
+  const durationSec = Math.max(0.05, sample.loop.enabled ? 1.4 : Math.min(2.2, pcm.frames / pcm.sampleRate));
+  const project = parseProject({
+    version: 1,
+    name: "preview",
+    sampleRate: ctx.sampleRate,
+    samples: [sample],
+    tracks: [
+      {
+        id: "preview",
+        name: "preview",
+        defaultSampleId: sample.id,
+        notes: [{ pitch: pitch ?? sample.basePitch, startSec: 0, durationSec, velocity: 127 }],
+      },
+    ],
+  });
+
+  const mix = mixProject(project, bankFromRecord({ [sample.id]: pcm }), { limiter: false, tailSec: 0.1 });
+  const buffer = ctx.createBuffer(2, mix.frames, mix.sampleRate);
+  buffer.copyToChannel(mix.left as Float32Array<ArrayBuffer>, 0);
+  buffer.copyToChannel(mix.right as Float32Array<ArrayBuffer>, 1);
 
   const source = ctx.createBufferSource();
   source.buffer = buffer;
-  source.playbackRate.value = pitchRatio(pitch ?? sample.basePitch, sample.basePitch, sample.tuneCents);
-
-  const fullLength = pcm.frames / pcm.sampleRate;
-  if (sample.loop.enabled) {
-    source.loop = true;
-    source.loopStart = sample.loop.startSec;
-    source.loopEnd = sample.loop.endSec > sample.loop.startSec ? sample.loop.endSec : fullLength;
-  }
-
-  const gain = ctx.createGain();
-  const env = sample.envelope;
-  const now = ctx.currentTime;
-  const peak = sample.gain;
-  // Audition the exact engine envelope by sampling envelopeLevel into a value
-  // curve, so attack/decay/release shapes match playback and export.
-  const sustainHold = sample.loop.enabled ? 1.4 : Math.min(2.2, fullLength);
-  const gateSec = (env.delayMs + env.attackMs + env.holdMs + env.decayMs) / 1000 + sustainHold;
-  const total = gateSec + env.releaseMs / 1000;
-  const points = Math.max(2, Math.min(8000, Math.round(total * 1000)));
-  const curve = new Float32Array(points);
-  for (let i = 0; i < points; i += 1) {
-    const t = (i / (points - 1)) * total;
-    curve[i] = envelopeLevel(env, t, gateSec) * peak;
-  }
-  gain.gain.setValueCurveAtTime(curve, now, total);
-
-  if (sample.filter.enabled) {
-    const filter = ctx.createBiquadFilter();
-    filter.type = sample.filter.type;
-    filter.frequency.value = sample.filter.cutoffHz;
-    filter.Q.value = sample.filter.q;
-    filter.gain.value = sample.filter.gainDb;
-    source.connect(filter);
-    filter.connect(gain);
-  } else {
-    source.connect(gain);
-  }
-  gain.connect(ctx.destination);
-  source.start(now);
-  source.stop(now + total + 0.05);
+  source.connect(ctx.destination);
+  source.start();
 }

@@ -143,6 +143,11 @@ function anySolo(tracks: Track[]): boolean {
   return tracks.some((t) => t.solo);
 }
 
+/** Whether a track is heard given the current mute/solo state. */
+function trackRenders(track: Track, solo: boolean): boolean {
+  return !track.muted && (!solo || track.solo);
+}
+
 function projectEndSeconds(project: Project, sampleById: Map<string, Sample>): number {
   let end = 0;
   for (const track of project.tracks) {
@@ -288,9 +293,13 @@ function renderNote(
   }
 }
 
-/** The reverb only contributes sound when it is enabled, wet, and actually fed by a track. */
+/** The reverb only contributes sound when it is enabled, wet, and fed by a track that actually renders. */
 function reverbAudible(project: Project): boolean {
-  return project.reverb.enabled && project.reverb.wet > 0 && project.tracks.some((t) => t.reverbSend > 0);
+  if (!project.reverb.enabled || project.reverb.wet <= 0) {
+    return false;
+  }
+  const solo = anySolo(project.tracks);
+  return project.tracks.some((t) => trackRenders(t, solo) && t.reverbSend > 0);
 }
 
 function reverbTailSeconds(project: Project): number {
@@ -332,7 +341,7 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
   const masterGain = project.masterGain;
 
   for (const track of project.tracks) {
-    if (track.muted || (solo && !track.solo)) {
+    if (!trackRenders(track, solo)) {
       continue;
     }
     const pan = panGains(track.pan);
