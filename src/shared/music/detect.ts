@@ -23,8 +23,8 @@ export interface SamplePitchEstimate {
 
 export interface DetectOptions extends YinOptions {
   minProbability?: number;
-  /** Stop after this many voiced frames so long clips don't block the caller. */
-  maxVoicedFrames?: number;
+  /** Upper bound on frames analyzed; the hop widens so long clips don't block the caller. */
+  maxScanFrames?: number;
 }
 
 const DEFAULT_THRESHOLD = 0.1;
@@ -35,7 +35,7 @@ const DEFAULT_MIN_FREQUENCY = midiToFrequency(DETECTABLE_MIDI_LOW);
 const DEFAULT_MAX_FREQUENCY = midiToFrequency(DETECTABLE_MIDI_HIGH);
 const ENERGY_FLOOR = 1e-9;
 const DEFAULT_MIN_PROBABILITY = 0.8;
-const DEFAULT_MAX_VOICED_FRAMES = 256;
+const DEFAULT_MAX_SCAN_FRAMES = 256;
 const MIDI_MIN = 0;
 const MIDI_MAX = 127;
 
@@ -173,9 +173,12 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
   const channel = toMono(pcm.channels, first.length);
   const minFrequency = options.minFrequency ?? DEFAULT_MIN_FREQUENCY;
   const minProbability = options.minProbability ?? DEFAULT_MIN_PROBABILITY;
-  const maxVoicedFrames = options.maxVoicedFrames ?? DEFAULT_MAX_VOICED_FRAMES;
+  const maxScanFrames = options.maxScanFrames ?? DEFAULT_MAX_SCAN_FRAMES;
   const frameSize = Math.min(channel.length, frameSizeFor(pcm.sampleRate, minFrequency));
-  const hop = Math.max(1, frameSize >> 2);
+  // Widen the hop on long clips so the loop scans at most ~maxScanFrames frames,
+  // bounding work even when the audio is entirely silent or unpitched.
+  const span = channel.length - frameSize;
+  const hop = Math.max(1, frameSize >> 2, Math.ceil(span / maxScanFrames));
 
   const midis: number[] = [];
   const probabilities: number[] = [];
@@ -187,9 +190,6 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
     }
     midis.push(frequencyToMidi(estimate.frequencyHz));
     probabilities.push(estimate.probability);
-    if (midis.length >= maxVoicedFrames) {
-      break;
-    }
   }
   if (midis.length === 0) {
     return null;

@@ -173,12 +173,14 @@ describe("detectSamplePitch", () => {
     expect(est!.basePitch).toBe(31);
   });
 
-  it("caps the number of analyzed voiced frames to bound work on long samples", () => {
+  it("bounds the number of analyzed frames with an adaptive hop, even for unpitched clips", () => {
     const sampleRate = 44100;
     const frames = sampleRate;
     const pcm: PcmAudio = { sampleRate, channels: [sine(440, sampleRate, frames)], frames };
-    const est = detectSamplePitch(pcm, { maxVoicedFrames: 4 });
-    expect(est!.voicedFrames).toBe(4);
+    // maxScanFrames 8 widens the hop so only 8 frames are scanned across the
+    // whole clip, bounding work regardless of how many frames turn out voiced.
+    const est = detectSamplePitch(pcm, { maxScanFrames: 8 });
+    expect(est!.voicedFrames).toBe(8);
     expect(est!.basePitch).toBe(69);
   });
 
