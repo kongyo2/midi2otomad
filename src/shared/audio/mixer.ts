@@ -288,11 +288,13 @@ function renderNote(
   }
 }
 
+/** The reverb only contributes sound when it is enabled, wet, and actually fed by a track. */
+function reverbAudible(project: Project): boolean {
+  return project.reverb.enabled && project.reverb.wet > 0 && project.tracks.some((t) => t.reverbSend > 0);
+}
+
 function reverbTailSeconds(project: Project): number {
   const r = project.reverb;
-  if (!r.enabled) {
-    return 0;
-  }
   return r.preDelayMs / 1000 + reverbDecaySeconds(r.roomSize);
 }
 
@@ -317,14 +319,13 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
   const outRate = project.sampleRate;
   const sampleById = new Map<string, Sample>(project.samples.map((s) => [s.id, s]));
   const tailSec = options.tailSec ?? 0.25;
-  const end = projectEndSeconds(project, sampleById) + tailSec + reverbTailSeconds(project);
+  const audible = reverbAudible(project);
+  const end = projectEndSeconds(project, sampleById) + tailSec + (audible ? reverbTailSeconds(project) : 0);
   const frames = Math.max(MIN_FRAMES, Math.ceil(end * outRate) + 1);
 
   const left = new Float32Array(frames);
   const right = new Float32Array(frames);
-  const send: SendBus | null = project.reverb.enabled
-    ? { l: new Float32Array(frames), r: new Float32Array(frames) }
-    : null;
+  const send: SendBus | null = audible ? { l: new Float32Array(frames), r: new Float32Array(frames) } : null;
   const buses: Buses = { left, right, send };
 
   const solo = anySolo(project.tracks);

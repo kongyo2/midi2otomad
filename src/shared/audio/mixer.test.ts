@@ -665,6 +665,19 @@ describe("mixProject reverb send", () => {
     const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
     expect(mix.durationSec).toBeGreaterThan(10);
   });
+
+  it("does not reserve a long tail when no track sends to the reverb", () => {
+    const project = reverbProject({ enabled: true, roomSize: 1, wet: 1 }, 0);
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.durationSec).toBeLessThan(2);
+  });
+
+  it("stays dry when the reverb wet level is zero", () => {
+    const project = reverbProject({ enabled: true, roomSize: 1, wet: 0 }, 1);
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.durationSec).toBeLessThan(2);
+    expect(tailEnergy(mix.left, 600)).toBe(0);
+  });
 });
 
 describe("mixProject buffer bounds", () => {

@@ -81,6 +81,7 @@ describe("midiToProject", () => {
       bpm: 100,
       sampleRate: 44100,
       masterGain: 0.5,
+      reverb: { enabled: true, roomSize: 0.9, wet: 0.4 },
       samples: [{ id: "kept", name: "snare" }],
       tracks: [],
     });
@@ -92,6 +93,7 @@ describe("midiToProject", () => {
     const result = midiToProject(bytesOf(midi), "reimport.mid", previous);
     expect(result.project.sampleRate).toBe(44100);
     expect(result.project.masterGain).toBe(0.5);
+    expect(result.project.reverb).toEqual(previous.reverb);
     expect(result.project.samples).toEqual(previous.samples);
     expect(result.project.tracks[0]!.defaultSampleId).toBe("kept");
     expect(result.project.bpm).toBe(100);
