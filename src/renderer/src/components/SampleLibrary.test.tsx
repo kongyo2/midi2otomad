@@ -1,8 +1,18 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { StudioContextValue } from "../state/StudioContext";
 import { makeStudioValue } from "../../../test/studio";
 import { parseProject } from "../../../shared/schemas/project";
+
+function cssRuleBody(css: string, selector: string): string {
+  const marker = `${selector} {`;
+  const start = css.indexOf(marker);
+  if (start === -1) return "";
+  const open = start + marker.length;
+  return css.slice(open, css.indexOf("}", open));
+}
 
 const holder = vi.hoisted(() => ({ value: null as StudioContextValue | null }));
 
@@ -99,5 +109,13 @@ describe("SampleLibrary", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "✕" })[0]!);
     expect(value.removeSample).toHaveBeenCalledWith("s1");
+  });
+
+  it("constrains the sample card so a long name truncates instead of overflowing", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/renderer/src/index.css"), "utf8");
+    // The name's ellipsis only engages when every flex ancestor can shrink; the
+    // intermediate .samplelist__item needs an explicit min-width:0 or its default
+    // min-width:auto keeps the long name at full width and pushes it out of the panel.
+    expect(cssRuleBody(css, ".samplelist__item")).toMatch(/min-width:\s*0/);
   });
 });
