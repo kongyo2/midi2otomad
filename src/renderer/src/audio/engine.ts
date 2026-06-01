@@ -64,10 +64,6 @@ export class PreviewEngine {
     return this.offset;
   }
 
-  setMasterGain(value: number): void {
-    this.master.gain.value = value;
-  }
-
   private teardownSource(): void {
     if (this.source !== null) {
       this.stopping = true;

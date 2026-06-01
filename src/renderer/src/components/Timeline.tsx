@@ -11,7 +11,7 @@ const MAX_CANVAS_WIDTH = 30000;
 export function Timeline(): React.JSX.Element {
   const { project, selectedTrackId, seek, isPlaying } = useStudio();
   const playhead = usePlayhead();
-  const [pxPerSec, setPxPerSec] = useState(80);
+  const [pxRequested, setPxRequested] = useState(80);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const duration = useMemo(() => {
@@ -24,6 +24,10 @@ export function Timeline(): React.JSX.Element {
     return Math.max(end + 2, 8);
   }, [project.tracks]);
 
+  // Canvas elements have a hard pixel-width limit, so cap the effective zoom to keep
+  // the whole song within one canvas. Every position (notes, playhead, seek) uses this
+  // same scale so nothing becomes unreachable on long arrangements.
+  const pxPerSec = Math.min(pxRequested, MAX_CANVAS_WIDTH / Math.max(1, duration));
   const canvasWidth = Math.min(MAX_CANVAS_WIDTH, Math.ceil(duration * pxPerSec));
   const contentWidth = HEADER_WIDTH + canvasWidth;
   const playheadX = HEADER_WIDTH + playhead * pxPerSec;
@@ -54,11 +58,11 @@ export function Timeline(): React.JSX.Element {
       <div className="timeline-toolbar">
         <span className="timeline-toolbar__title">タイムライン / ピアノロール</span>
         <div className="timeline-toolbar__zoom">
-          <button type="button" className="iconbtn" onClick={() => setPxPerSec((v) => Math.max(24, v - 16))}>
+          <button type="button" className="iconbtn" onClick={() => setPxRequested((v) => Math.max(24, v - 16))}>
             －
           </button>
-          <span className="zoomlabel">{pxPerSec}px/s</span>
-          <button type="button" className="iconbtn" onClick={() => setPxPerSec((v) => Math.min(200, v + 16))}>
+          <span className="zoomlabel">{Math.round(pxPerSec)}px/s</span>
+          <button type="button" className="iconbtn" onClick={() => setPxRequested((v) => Math.min(200, v + 16))}>
             ＋
           </button>
         </div>

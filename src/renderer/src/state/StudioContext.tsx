@@ -159,7 +159,6 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
     if (engineRef.current === null) {
       const engine = new PreviewEngine();
       engine.onEnded = () => setIsPlaying(false);
-      engine.setMasterGain(projectRef.current.masterGain);
       engineRef.current = engine;
     }
     return engineRef.current;
@@ -176,10 +175,6 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
     }
     return mix;
   }, [bank, getEngine]);
-
-  useEffect(() => {
-    engineRef.current?.setMasterGain(project.masterGain);
-  }, [project.masterGain]);
 
   const selectTrack = useCallback((id: string | null) => setSelectedTrackId(id), []);
   const selectSample = useCallback((id: string | null) => setSelectedSampleId(id), []);
@@ -272,7 +267,7 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
   const patchProject = useCallback(
     (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain">>) => {
       dispatch({ type: "patchProject", patch });
-      if (patch.bpm !== undefined) {
+      if (patch.bpm !== undefined || patch.masterGain !== undefined) {
         markDirty();
       }
     },
