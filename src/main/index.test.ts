@@ -172,6 +172,10 @@ describe("main process bootstrap", () => {
   it("wires up the window lifecycle handlers", async () => {
     await loadMain();
 
+    expect(h.BrowserWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ icon: expect.stringContaining("resources/icon.png") }),
+    );
+
     h.windowEvents["ready-to-show"]!();
     expect(h.showSpy).toHaveBeenCalledTimes(1);
 
