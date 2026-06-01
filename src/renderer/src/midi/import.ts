@@ -62,7 +62,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         v: clamp01(cc.value),
       }));
 
-      const color = TRACK_PALETTE[colorIndex % TRACK_PALETTE.length] ?? "#7c5cff";
+      const color = TRACK_PALETTE[colorIndex % TRACK_PALETTE.length]!;
       colorIndex += 1;
       const name = track.name.trim() !== "" ? track.name.trim() : `Track ${index + 1}`;
 
@@ -83,7 +83,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
     });
 
   const tempos = header.tempos.map((tempo) => ({
-    timeSec: tempo.time ?? header.ticksToSeconds(tempo.ticks),
+    timeSec: header.ticksToSeconds(tempo.ticks),
     bpm: tempo.bpm,
   }));
 

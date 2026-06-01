@@ -27,6 +27,8 @@ jobs:
             script: typecheck
           - name: Format
             script: format:check
+          - name: Test
+            script: test:coverage
     steps:
       - name: Checkout
         uses: actions/checkout@v4
