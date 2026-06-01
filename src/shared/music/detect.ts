@@ -80,6 +80,11 @@ function parabolicRefine(cmndf: Float32Array, tau: number): number {
   const s1 = cmndf[tau]!;
   const s2 = cmndf[tau + 1]!;
   const denominator = 2 * s1 - s0 - s2;
+  if (denominator === 0) {
+    // A flat parabola (e.g. an impulse frame's constant CMNDF) has no vertex to
+    // interpolate; keep the integer lag rather than dividing by zero.
+    return tau;
+  }
   // The vertex of a true minimum lies within half a bin; clamp to the adjacent
   // bins so a monotonic slope at the search boundary cannot extrapolate away.
   const shift = Math.max(-1, Math.min(1, (s2 - s0) / (2 * denominator)));

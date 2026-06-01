@@ -93,6 +93,16 @@ describe("detectPitchYin", () => {
     const frame = new Float32Array(2048).fill(0.5);
     expect(detectPitchYin(frame, 44100)).toBeNull();
   });
+
+  it("returns a finite estimate for an impulse frame whose CMNDF is flat", () => {
+    // A single spike past the lag range makes the difference function constant,
+    // so CMNDF is identically 1 and the parabola is flat (zero denominator).
+    const frame = new Float32Array(64);
+    frame[31] = 1;
+    const est = detectPitchYin(frame, 1000, { minFrequency: 100, maxFrequency: 500 });
+    expect(est).not.toBeNull();
+    expect(Number.isFinite(est!.frequencyHz)).toBe(true);
+  });
 });
 
 describe("detectSamplePitch", () => {
