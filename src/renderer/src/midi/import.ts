@@ -46,12 +46,12 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
     }
   }
 
-  let colorIndex = 0;
   let noteCount = 0;
 
   const tracks = midi.tracks
-    .filter((track) => track.notes.length > 0)
-    .map((track, index) => {
+    .map((track, midiIndex) => ({ track, midiIndex }))
+    .filter(({ track }) => track.notes.length > 0)
+    .map(({ track, midiIndex }, index) => {
       const notes = track.notes.map((note) => {
         noteCount += 1;
         return {
@@ -68,14 +68,13 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         v: clamp01(cc.value),
       }));
 
-      const color = TRACK_PALETTE[colorIndex % TRACK_PALETTE.length]!;
-      colorIndex += 1;
+      const color = TRACK_PALETTE[index % TRACK_PALETTE.length]!;
       const name = track.name.trim() !== "" ? track.name.trim() : `Track ${index + 1}`;
 
       return {
         id: makeId("track"),
         name,
-        midiIndex: index,
+        midiIndex,
         color,
         muted: false,
         solo: false,
@@ -85,7 +84,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         noteSampleMap: {},
         notes,
         dynamics: { volume, expression },
-        reverbSend: previousSends.get(index) ?? 0,
+        reverbSend: previousSends.get(midiIndex) ?? 0,
       };
     });
 
