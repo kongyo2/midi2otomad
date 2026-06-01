@@ -25,7 +25,7 @@ jobs:
         run: npm ci
 
       - name: Build and package Windows installer
-        run: npm run package
+        run: npm run package -- --publish never
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
