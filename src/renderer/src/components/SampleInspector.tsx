@@ -148,10 +148,7 @@ function LoopEditor({ sample, peaks, duration, loopEnd }: LoopEditorProps): Reac
 
   const beginDrag = (handle: "start" | "end") => (event: React.PointerEvent) => {
     event.preventDefault();
-    const element = trackRef.current;
-    if (element === null) {
-      return;
-    }
+    const element = trackRef.current!;
     const move = (clientX: number): void => {
       const rect = element.getBoundingClientRect();
       const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));

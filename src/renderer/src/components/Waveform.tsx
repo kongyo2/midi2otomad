@@ -11,16 +11,13 @@ export function Waveform({ peaks, height = 96, loop, color = "#7c5cff" }: Wavefo
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas === null) {
-      return;
-    }
+    const canvas = canvasRef.current!;
     const draw = (): void => {
       const ctx = canvas.getContext("2d");
-      const parent = canvas.parentElement;
-      if (ctx === null || parent === null) {
+      if (ctx === null) {
         return;
       }
+      const parent = canvas.parentElement!;
       const dpr = window.devicePixelRatio || 1;
       const width = parent.clientWidth;
       canvas.width = Math.max(1, Math.floor(width * dpr));
@@ -62,7 +59,7 @@ export function Waveform({ peaks, height = 96, loop, color = "#7c5cff" }: Wavefo
       const barCount = peaks.length;
       const barWidth = width / barCount;
       for (let i = 0; i < barCount; i += 1) {
-        const value = peaks[i] ?? 0;
+        const value = peaks[i]!;
         const h = Math.max(1, value * (height - 6));
         ctx.fillRect(i * barWidth, mid - h / 2, Math.max(0.6, barWidth - 0.3), h);
       }

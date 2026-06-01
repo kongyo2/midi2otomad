@@ -17,10 +17,7 @@ export function TrackRow({ track, pxPerSec, rowHeight, canvasWidth, selected }: 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas === null) {
-      return;
-    }
+    const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d");
     if (ctx === null) {
       return;

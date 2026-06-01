@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 
 const ffmpegVersion = vi.hoisted(() => vi.fn(() => "8.1"));

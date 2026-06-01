@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IPC, type BridgeApi } from "../shared/ipc";
 import type { BounceRequest } from "../shared/media";

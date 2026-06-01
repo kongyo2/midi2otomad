@@ -23,7 +23,7 @@ type Action =
   | { type: "updateTrack"; id: string; patch: Partial<Track> }
   | { type: "setNoteSample"; trackId: string; note: number; sampleId: string | null };
 
-function projectReducer(project: Project, action: Action): Project {
+export function projectReducer(project: Project, action: Action): Project {
   switch (action.type) {
     case "setProject":
       return action.project;

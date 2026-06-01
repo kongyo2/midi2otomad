@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { BrowserWindow } from "electron";
 import type { BounceRequest } from "../shared/media";
