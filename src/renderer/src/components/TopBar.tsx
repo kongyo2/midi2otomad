@@ -69,17 +69,10 @@ export function TopBar(): React.JSX.Element {
       </div>
 
       <div className="topbar__group topbar__master">
-        <label className="microfield">
+        <div className="microfield" title="読み込んだ MIDI のテンポ（ノートは絶対時間で保持されます）">
           <span>BPM</span>
-          <input
-            className="input input--mini"
-            type="number"
-            min={20}
-            max={400}
-            value={Math.round(project.bpm)}
-            onChange={(event) => patchProject({ bpm: Number(event.target.value) })}
-          />
-        </label>
+          <span className="microfield__value">{Math.round(project.bpm)}</span>
+        </div>
         <label className="microfield microfield--wide">
           <span>Master</span>
           <input

@@ -130,6 +130,71 @@ async function main(): Promise<void> {
   const mutedMix = mixProject(muted, bank);
   check("muted track is silent", mutedMix.peak < 1e-6);
 
+  console.log("automation defaults");
+  const rmsOf = (m: { left: Float32Array }, sec: number): number => {
+    let sum = 0;
+    const n = Math.round(sec * sampleRate);
+    for (let i = 0; i < n; i += 1) {
+      sum += (m.left[i] ?? 0) ** 2;
+    }
+    return Math.sqrt(sum / n);
+  };
+  const baseSample = {
+    id: "s1",
+    name: "sine",
+    basePitch: 60,
+    gain: 1,
+    durationSec: 1,
+    loop: { enabled: false, startSec: 0, endSec: 0 },
+    envelope: { attackMs: 1, releaseMs: 5 },
+  };
+  const introNote = { pitch: 60, startSec: 0, durationSec: 0.3, velocity: 100 };
+  const lateCc = parseProject({
+    version: 1,
+    name: "latecc",
+    sampleRate,
+    samples: [baseSample],
+    tracks: [
+      {
+        id: "t1",
+        name: "x",
+        defaultSampleId: "s1",
+        notes: [introNote],
+        dynamics: { volume: [], expression: [{ t: 1, v: 0.1 }] },
+      },
+    ],
+  });
+  const noCc = parseProject({
+    version: 1,
+    name: "nocc",
+    sampleRate,
+    samples: [baseSample],
+    tracks: [
+      { id: "t1", name: "x", defaultSampleId: "s1", notes: [introNote], dynamics: { volume: [], expression: [] } },
+    ],
+  });
+  const lateRms = rmsOf(mixProject(lateCc, bank), 0.2);
+  const noRms = rmsOf(mixProject(noCc, bank), 0.2);
+  check(
+    "intro before a late CC stays at full volume",
+    Math.abs(lateRms - noRms) < noRms * 0.05,
+    `late=${lateRms} plain=${noRms}`,
+  );
+
+  console.log("silence detection");
+  const noSample = parseProject({
+    version: 1,
+    name: "silent",
+    sampleRate,
+    samples: [],
+    tracks: [
+      { id: "t1", name: "x", defaultSampleId: null, notes: [introNote], dynamics: { volume: [], expression: [] } },
+    ],
+  });
+  const silentMix = mixProject(noSample, bank);
+  check("project with no assigned sample has zero peak", silentMix.peak < 1e-6, `peak=${silentMix.peak}`);
+  check("frame count alone would miss the silence", silentMix.frames > 2);
+
   console.log("wav encode");
   const wav24 = encodeWav({ sampleRate, left: mix.left, right: mix.right, frames: mix.frames }, 24);
   check("RIFF tag", wav24.toString("ascii", 0, 4) === "RIFF");

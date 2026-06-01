@@ -7,7 +7,7 @@ import {
   DEFAULT_BASE_PITCH,
   createEmptyProject,
 } from "../../../shared/schemas/project";
-import { type AudioBank, type MixResult, type PcmAudio, mixProject } from "../../../shared/audio/mixer";
+import { type AudioBank, type PcmAudio, mixProject } from "../../../shared/audio/mixer";
 import type { BounceResponse, ExportFormat, LoadedFile, WavBitDepth } from "../../../shared/media";
 import { makeId } from "../../../shared/id";
 import { buildWaveformPeaks, decodeAudio } from "../audio/decode";
@@ -166,14 +166,13 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
 
   const bank = useMemo<AudioBank>(() => ({ get: (id) => bankRef.current.get(id) }), []);
 
-  const ensureMix = useCallback((): MixResult => {
+  const ensureMix = useCallback((): void => {
     const engine = getEngine();
-    const mix = mixProject(projectRef.current, bank, { limiter: true });
-    if (dirtyRef.current) {
-      engine.setMix(mix);
-      dirtyRef.current = false;
+    if (!dirtyRef.current) {
+      return;
     }
-    return mix;
+    engine.setMix(mixProject(projectRef.current, bank, { limiter: true }));
+    dirtyRef.current = false;
   }, [bank, getEngine]);
 
   const selectTrack = useCallback((id: string | null) => setSelectedTrackId(id), []);
@@ -334,7 +333,7 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
       setBusy("ミックスを書き出し中…");
       try {
         const mix = mixProject(projectRef.current, bank, { limiter: true });
-        if (mix.frames < 2) {
+        if (mix.peak < 1e-5) {
           showToast("書き出す音がありません。MIDI と音声素材を読み込んでください。");
           return;
         }

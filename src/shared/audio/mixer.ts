@@ -45,8 +45,10 @@ function sampleAutomation(points: AutomationPoint[], t: number): number {
     return 1;
   }
   const first = points[0];
-  if (first === undefined || t <= first.t) {
-    return first?.v ?? 1;
+  if (first === undefined || t < first.t) {
+    // Before the first explicit controller event the value defaults to full,
+    // rather than projecting the first (possibly low) event backward over the intro.
+    return 1;
   }
   const last = points[points.length - 1];
   if (last !== undefined && t >= last.t) {
