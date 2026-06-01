@@ -1,0 +1,62 @@
+{
+  "name": "midi2otomad",
+  "version": "0.1.0",
+  "description": "単体で完結するGUIを備えたMIDI音MAD作成デスクトップアプリ",
+  "author": "kongyo2",
+  "license": "MIT",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "lint": "oxlint --format agent",
+    "lint:fix": "oxlint --fix",
+    "lint:strict": "oxlint --deny-warnings",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "package": "electron-vite build && electron-builder",
+    "package:dir": "electron-vite build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@tonejs/midi": "^2.0.28",
+    "node-av": "^5.2.4",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "tonal": "^6.4.3",
+    "tone": "^15.1.22",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "oxlint": "^1.67.0",
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.3"
+  },
+  "overrides": {
+    "werift": {
+      "@shinyoshiaki/binary-data": "npm:@seydx/binary-data@0.6.2",
+      "ip": "npm:neoip@2.1.0"
+    },
+    "werift-dtls": {
+      "@shinyoshiaki/binary-data": "npm:@seydx/binary-data@0.6.2"
+    },
+    "werift-ice": {
+      "ip": "npm:neoip@2.1.0"
+    },
+    "werift-sctp": {
+      "@shinyoshiaki/binary-data": "npm:@seydx/binary-data@0.6.2"
+    }
+  }
+}
