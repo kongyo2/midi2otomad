@@ -697,6 +697,32 @@ describe("mixProject reverb send", () => {
     const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
     expect(mix.durationSec).toBeLessThan(2);
   });
+
+  it("does not reserve a long tail when the sending track has no decoded audio", () => {
+    const project = reverbProject({ enabled: true, roomSize: 1, wet: 1 }, 1);
+    const mix = mixProject(project, bankFromRecord({}), { limiter: false });
+    expect(mix.durationSec).toBeLessThan(2);
+    expect(tailEnergy(mix.left, 600)).toBe(0);
+  });
+
+  it("does not reserve a long tail when the sending track has no sample assigned", () => {
+    const project = parseProject({
+      version: 1,
+      name: "r",
+      sampleRate: 1000,
+      reverb: { enabled: true, roomSize: 1, wet: 1 },
+      samples: [sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } })],
+      tracks: [
+        trackRaw({
+          defaultSampleId: null,
+          reverbSend: 1,
+          notes: [{ pitch: 60, startSec: 0, durationSec: 0.05, velocity: 127 }],
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.durationSec).toBeLessThan(2);
+  });
 });
 
 describe("mixProject buffer bounds", () => {

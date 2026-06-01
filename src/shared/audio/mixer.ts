@@ -293,13 +293,41 @@ function renderNote(
   }
 }
 
-/** The reverb only contributes sound when it is enabled, wet, and fed by a track that actually renders. */
-function reverbAudible(project: Project): boolean {
+/** Resolve a note to its sample and decoded audio, or null when nothing renders. */
+function resolveNoteSource(
+  track: Track,
+  note: Note,
+  sampleById: Map<string, Sample>,
+  bank: AudioBank,
+): { sample: Sample; src: PcmAudio } | null {
+  const sampleId = track.noteSampleMap[String(note.pitch)] ?? track.defaultSampleId;
+  if (sampleId === null) {
+    return null;
+  }
+  const sample = sampleById.get(sampleId);
+  const src = bank.get(sampleId);
+  if (sample === undefined || src === undefined || src.frames < 2) {
+    return null;
+  }
+  return { sample, src };
+}
+
+/**
+ * The reverb only contributes sound when it is enabled, wet, and fed by a track that renders and
+ * carries at least one note that resolves to decoded audio — without a real send the tail is silent,
+ * so reserving its decay would only pad the buffer with silence.
+ */
+function reverbAudible(project: Project, sampleById: Map<string, Sample>, bank: AudioBank): boolean {
   if (!project.reverb.enabled || project.reverb.wet <= 0) {
     return false;
   }
   const solo = anySolo(project.tracks);
-  return project.tracks.some((t) => trackRenders(t, solo) && t.reverbSend > 0);
+  return project.tracks.some(
+    (t) =>
+      trackRenders(t, solo) &&
+      t.reverbSend > 0 &&
+      t.notes.some((n) => resolveNoteSource(t, n, sampleById, bank) !== null),
+  );
 }
 
 function reverbTailSeconds(project: Project): number {
@@ -328,7 +356,7 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
   const outRate = project.sampleRate;
   const sampleById = new Map<string, Sample>(project.samples.map((s) => [s.id, s]));
   const tailSec = options.tailSec ?? 0.25;
-  const audible = reverbAudible(project);
+  const audible = reverbAudible(project, sampleById, bank);
   const end = projectEndSeconds(project, sampleById) + tailSec + (audible ? reverbTailSeconds(project) : 0);
   const frames = Math.max(MIN_FRAMES, Math.ceil(end * outRate) + 1);
 
@@ -347,16 +375,11 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
     const pan = panGains(track.pan);
     const trackDyn = buildTrackDynamics(track, frames, outRate);
     for (const note of track.notes) {
-      const sampleId = track.noteSampleMap[String(note.pitch)] ?? track.defaultSampleId;
-      if (sampleId === null) {
+      const resolved = resolveNoteSource(track, note, sampleById, bank);
+      if (resolved === null) {
         continue;
       }
-      const sample = sampleById.get(sampleId);
-      const src = bank.get(sampleId);
-      if (sample === undefined || src === undefined || src.frames < 2) {
-        continue;
-      }
-      renderNote(note, sample, src, track, trackDyn, buses, outRate, masterGain, pan);
+      renderNote(note, resolved.sample, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
     }
   }
 
