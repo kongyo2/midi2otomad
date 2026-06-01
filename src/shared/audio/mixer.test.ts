@@ -30,6 +30,15 @@ function nyquistSource(frames: number, sampleRate = 1000): PcmAudio {
   return { sampleRate, channels: [ch], frames };
 }
 
+/** A bright quarter-rate square (250 Hz at 1 kHz) — high energy but below Nyquist, so a lowpass can shape it. */
+function brightSource(frames: number, sampleRate = 1000): PcmAudio {
+  const ch = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    ch[i] = Math.floor(i / 2) % 2 === 0 ? 1 : -1;
+  }
+  return { sampleRate, channels: [ch], frames };
+}
+
 function tailEnergy(arr: Float32Array, start: number): number {
   let sum = 0;
   for (let i = start; i < arr.length; i += 1) {
@@ -540,6 +549,67 @@ describe("mixProject per-sample filter", () => {
     );
     expect(filtered.peak).toBeLessThan(open.peak);
     expect(allFinite(filtered.left)).toBe(true);
+  });
+
+  it("opens the cutoff as the envelope amount rises", () => {
+    const src = brightSource(1000);
+    const swept = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({
+            envelope: { attackMs: 0, releaseMs: 0 },
+            filter: { enabled: true, type: "lowpass", cutoffHz: 80, envAmount: 4 },
+          }),
+        ],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    const closed = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({
+            envelope: { attackMs: 0, releaseMs: 0 },
+            filter: { enabled: true, type: "lowpass", cutoffHz: 80, envAmount: 0 },
+          }),
+        ],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    expect(swept.peak).toBeGreaterThan(closed.peak);
+    expect(allFinite(swept.left)).toBe(true);
+  });
+
+  it("wobbles the cutoff with the filter LFO, brightening at the crest", () => {
+    const src = brightSource(2000);
+    const mix = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({
+            durationSec: 2,
+            envelope: { attackMs: 0, releaseMs: 0 },
+            filter: { enabled: true, type: "lowpass", cutoffHz: 200, lfoDepth: 4, lfoHz: 2, lfoShape: "sine" },
+          }),
+        ],
+        tracks: [trackRaw({ notes: [{ pitch: 60, startSec: 0, durationSec: 1.5, velocity: 127 }] })],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    // LFO at 2 Hz, second cycle (past the filter's startup transient): the cutoff
+    // crests near t=0.625s and troughs near t=0.875s, so the bright source rings
+    // through far more strongly at the crest than at the trough.
+    const energy = (center: number): number => {
+      let sum = 0;
+      for (let i = center - 20; i < center + 20; i += 1) {
+        sum += mix.left[i]! * mix.left[i]!;
+      }
+      return sum;
+    };
+    expect(energy(625)).toBeGreaterThan(energy(875) * 2);
   });
 });
 

@@ -38,6 +38,10 @@ export const FilterSchema = z.object({
   cutoffHz: z.number().min(20).max(20000).default(20000),
   q: z.number().min(0.1).max(24).default(0.707),
   gainDb: z.number().min(-24).max(24).default(0),
+  envAmount: z.number().min(-8).max(8).default(0),
+  lfoHz: z.number().min(0).max(16).default(5),
+  lfoDepth: z.number().min(0).max(8).default(0),
+  lfoShape: z.enum(LFO_SHAPES).default("sine"),
 });
 
 export const PitchModSchema = z.object({

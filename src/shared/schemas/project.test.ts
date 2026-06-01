@@ -51,7 +51,17 @@ describe("parseProject", () => {
         releaseMs: 90,
         releaseCurve: 0,
       },
-      filter: { enabled: false, type: "lowpass", cutoffHz: 20000, q: 0.707, gainDb: 0 },
+      filter: {
+        enabled: false,
+        type: "lowpass",
+        cutoffHz: 20000,
+        q: 0.707,
+        gainDb: 0,
+        envAmount: 0,
+        lfoHz: 5,
+        lfoDepth: 0,
+        lfoShape: "sine",
+      },
       pitchMod: {
         glideSemitones: 0,
         glideMs: 0,
@@ -222,7 +232,17 @@ describe("extended synthesis schema", () => {
     const sample = project.samples[0]!;
     expect(sample.interpolation).toBe("linear");
     expect(sample.envelope.sustain).toBe(0.6);
-    expect(sample.filter).toEqual({ enabled: true, type: "bandpass", cutoffHz: 800, q: 4, gainDb: 6 });
+    expect(sample.filter).toEqual({
+      enabled: true,
+      type: "bandpass",
+      cutoffHz: 800,
+      q: 4,
+      gainDb: 6,
+      envAmount: 0,
+      lfoHz: 5,
+      lfoDepth: 0,
+      lfoShape: "sine",
+    });
     expect(sample.pitchMod.vibratoShape).toBe("triangle");
   });
 

@@ -126,6 +126,24 @@ describe("SampleInspector", () => {
     });
   });
 
+  it("modulates the filter cutoff with an envelope and an LFO", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("フィルターEG"), { target: { value: "3" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ envAmount: 3 }),
+    });
+    fireEvent.change(screen.getByLabelText("フィルターLFO深さ"), { target: { value: "2" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ lfoDepth: 2 }),
+    });
+    fireEvent.change(screen.getByLabelText("フィルターLFO波形"), { target: { value: "square" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ lfoShape: "square" }),
+    });
+  });
+
   it("configures pitch glide and vibrato", () => {
     const value = withSample();
     holder.value = value;

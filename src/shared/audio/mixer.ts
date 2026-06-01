@@ -4,6 +4,7 @@ import { cubicHermite } from "./interpolation";
 import { envelopeLevel } from "./envelope";
 import { pitchOffsetSemitones } from "./pitchmod";
 import { createBiquadState, designBiquad, processBiquadSample, type BiquadCoeffs } from "./filter";
+import { lfoValue } from "./lfo";
 import { createReverb } from "./reverb";
 
 /** Decoded source material: one Float32Array per channel, all the same length. */
@@ -170,6 +171,13 @@ function buildTrackDynamics(track: Track, frames: number, sampleRate: number): F
   return out;
 }
 
+/** Filter cutoff after the per-sample envelope sweep and LFO wobble, clamped to a safe band. */
+function modulatedCutoff(filter: Sample["filter"], env: number, tSec: number, nyquist: number): number {
+  const octaves = filter.envAmount * env + filter.lfoDepth * lfoValue(filter.lfoShape, tSec * filter.lfoHz);
+  const cutoff = filter.cutoffHz * Math.pow(2, octaves);
+  return cutoff < 20 ? 20 : cutoff > nyquist ? nyquist : cutoff;
+}
+
 interface SendBus {
   l: Float32Array;
   r: Float32Array;
@@ -212,9 +220,13 @@ function renderNote(
   }
   const ch1 = src.channels[1] ?? ch0;
 
-  const coeffs: BiquadCoeffs | null = sample.filter.enabled
-    ? designBiquad(sample.filter.type, sample.filter.cutoffHz, outRate, sample.filter.q, sample.filter.gainDb)
-    : null;
+  const filter = sample.filter;
+  const filterModulated = filter.enabled && (filter.envAmount !== 0 || filter.lfoDepth !== 0);
+  const staticCoeffs: BiquadCoeffs | null =
+    filter.enabled && !filterModulated
+      ? designBiquad(filter.type, filter.cutoffHz, outRate, filter.q, filter.gainDb)
+      : null;
+  const nyquist = outRate * 0.49;
   const stateL = createBiquadState();
   const stateR = createBiquadState();
   const send = buses.send;
@@ -248,13 +260,16 @@ function renderNote(
     }
 
     if (alive) {
+      const env = envelopeLevel(sample.envelope, tSec, gateSec);
       let sL = readSample(ch0, src.frames, pos, hermite, region);
       let sR = readSample(ch1, src.frames, pos, hermite, region);
-      if (coeffs !== null) {
+      if (filter.enabled) {
+        const coeffs = filterModulated
+          ? designBiquad(filter.type, modulatedCutoff(filter, env, tSec, nyquist), outRate, filter.q, filter.gainDb)
+          : staticCoeffs!;
         sL = processBiquadSample(coeffs, stateL, sL);
         sR = processBiquadSample(coeffs, stateR, sR);
       }
-      const env = envelopeLevel(sample.envelope, tSec, gateSec);
       if (env > 0) {
         const dyn = trackDyn === null ? 1 : trackDyn[outIdx]!;
         const amp = env * staticGain * dyn;

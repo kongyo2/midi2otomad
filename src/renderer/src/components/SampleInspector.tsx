@@ -41,10 +41,15 @@ const ENVELOPE_FIELDS: NumField<Envelope>[] = [
   { key: "releaseCurve", label: "リリースカーブ", min: -8, max: 8, step: 0.1, display: (v) => v.toFixed(1) },
 ];
 
+const oct = (value: number): string => `${value.toFixed(1)} oct`;
+
 const FILTER_FIELDS: NumField<Filter>[] = [
   { key: "cutoffHz", label: "カットオフ", min: 20, max: 20000, step: 1, display: (v) => `${v.toFixed(0)} Hz` },
   { key: "q", label: "レゾナンス", min: 0.1, max: 24, step: 0.1, display: (v) => `Q ${v.toFixed(2)}` },
   { key: "gainDb", label: "フィルターゲイン", min: -24, max: 24, step: 0.5, display: (v) => `${v.toFixed(1)} dB` },
+  { key: "envAmount", label: "フィルターEG", min: -8, max: 8, step: 0.1, display: oct },
+  { key: "lfoDepth", label: "フィルターLFO深さ", min: 0, max: 8, step: 0.1, display: oct },
+  { key: "lfoHz", label: "フィルターLFO速度", min: 0, max: 16, step: 0.1, display: (v) => `${v.toFixed(1)} Hz` },
 ];
 
 const PITCH_FIELDS: NumField<PitchMod>[] = [
@@ -255,6 +260,23 @@ export function SampleInspector(): React.JSX.Element {
         {FILTER_FIELDS.map((field) => (
           <RangeField key={field.key} field={field} value={sample.filter[field.key]} onChange={setFilter} />
         ))}
+        <label className="field">
+          <span className="field__label">LFO波形</span>
+          <select
+            className="select"
+            aria-label="フィルターLFO波形"
+            value={sample.filter.lfoShape}
+            onChange={(event) =>
+              updateSample(sample.id, { filter: { ...sample.filter, lfoShape: event.target.value as LfoShape } })
+            }
+          >
+            {LFO_SHAPES.map((shape) => (
+              <option key={shape} value={shape}>
+                {SHAPE_LABELS[shape]}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <h3 className="subheading">ダイナミックピッチ</h3>
