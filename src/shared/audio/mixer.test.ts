@@ -14,6 +14,30 @@ function rampSource(frames: number, sampleRate = 1000): PcmAudio {
   return { sampleRate, channels: [ch], frames };
 }
 
+function monoRampSource(frames: number, sampleRate = 1000): PcmAudio {
+  const ch = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    ch[i] = i / frames;
+  }
+  return { sampleRate, channels: [ch], frames };
+}
+
+function nyquistSource(frames: number, sampleRate = 1000): PcmAudio {
+  const ch = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    ch[i] = i % 2 === 0 ? 1 : -1;
+  }
+  return { sampleRate, channels: [ch], frames };
+}
+
+function tailEnergy(arr: Float32Array, start: number): number {
+  let sum = 0;
+  for (let i = start; i < arr.length; i += 1) {
+    sum += arr[i]! * arr[i]!;
+  }
+  return sum;
+}
+
 interface ProjectOpts {
   sampleRate?: number;
   masterGain?: number;
@@ -375,6 +399,178 @@ describe("mixProject looping", () => {
     });
     const mix = mixProject(project, bankFromRecord({ s1: rampSource(1000) }), { limiter: false });
     expect(mix.peak).toBeGreaterThan(0);
+  });
+});
+
+describe("mixProject interpolation quality", () => {
+  function curved(frames: number): PcmAudio {
+    const ch = new Float32Array(frames);
+    for (let i = 0; i < frames; i += 1) {
+      ch[i] = Math.sin(i * 0.3);
+    }
+    return { sampleRate: 1000, channels: [ch], frames };
+  }
+
+  it("defaults to cubic hermite, diverging from linear on fractional reads", () => {
+    const src = curved(200);
+    const base = sampleRaw({ tuneCents: 100, envelope: { attackMs: 0, releaseMs: 0 } });
+    const hermiteMix = mixProject(
+      makeProject({ samples: [{ ...base, interpolation: "hermite" }], tracks: [trackRaw()] }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    const linearMix = mixProject(
+      makeProject({ samples: [{ ...base, interpolation: "linear" }], tracks: [trackRaw()] }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    let diverges = false;
+    for (let i = 5; i < 150; i += 1) {
+      if (Math.abs(hermiteMix.left[i]! - linearMix.left[i]!) > 1e-7) {
+        diverges = true;
+        break;
+      }
+    }
+    expect(diverges).toBe(true);
+    expect(allFinite(hermiteMix.left)).toBe(true);
+    expect(allFinite(linearMix.left)).toBe(true);
+  });
+});
+
+describe("mixProject full envelope", () => {
+  it("decays toward the sustain level while the note is held", () => {
+    const project = makeProject({
+      samples: [sampleRaw({ envelope: { attackMs: 0, decayMs: 100, sustain: 0.5, releaseMs: 0 } })],
+      tracks: [trackRaw()],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.left[200]!).toBeCloseTo(0.5, 3);
+    expect(mix.left[50]!).toBeCloseTo(0.75, 3);
+  });
+
+  it("stays silent during the delay stage and opens afterward", () => {
+    const project = makeProject({
+      samples: [sampleRaw({ envelope: { delayMs: 50, attackMs: 0, releaseMs: 0 } })],
+      tracks: [trackRaw()],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.left[20]).toBe(0);
+    expect(mix.left[80]!).toBeCloseTo(1, 3);
+  });
+});
+
+describe("mixProject dynamic pitch", () => {
+  it("reads further into a rising sample as the pitch glides up", () => {
+    const src = monoRampSource(1000);
+    const glided = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 }, pitchMod: { glideSemitones: 12, glideMs: 1000 } }),
+        ],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    const plain = mixProject(
+      makeProject({
+        samples: [sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } })],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    expect(glided.left[100]!).toBeGreaterThan(plain.left[100]!);
+  });
+
+  it("wobbles playback under vibrato", () => {
+    const src = monoRampSource(1000);
+    const vibrato = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 }, pitchMod: { vibratoCents: 200, vibratoHz: 8 } }),
+        ],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    const plain = mixProject(
+      makeProject({
+        samples: [sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } })],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    let wobbles = false;
+    for (let i = 10; i < 400; i += 1) {
+      if (Math.abs(vibrato.left[i]! - plain.left[i]!) > 1e-6) {
+        wobbles = true;
+        break;
+      }
+    }
+    expect(wobbles).toBe(true);
+  });
+});
+
+describe("mixProject per-sample filter", () => {
+  it("tames a bright source with a lowpass filter", () => {
+    const src = nyquistSource(1000);
+    const filtered = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({
+            envelope: { attackMs: 0, releaseMs: 0 },
+            filter: { enabled: true, type: "lowpass", cutoffHz: 50 },
+          }),
+        ],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    const open = mixProject(
+      makeProject({
+        samples: [sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } })],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    expect(filtered.peak).toBeLessThan(open.peak);
+    expect(allFinite(filtered.left)).toBe(true);
+  });
+});
+
+describe("mixProject reverb send", () => {
+  function reverbProject(reverb: Record<string, unknown> | undefined, reverbSend: number): Project {
+    return parseProject({
+      version: 1,
+      name: "r",
+      sampleRate: 1000,
+      ...(reverb !== undefined ? { reverb } : {}),
+      samples: [sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } })],
+      tracks: [trackRaw({ reverbSend, notes: [{ pitch: 60, startSec: 0, durationSec: 0.05, velocity: 127 }] })],
+    });
+  }
+
+  it("adds a wet tail beyond the dry note when enabled and sent", () => {
+    const project = reverbProject({ enabled: true, roomSize: 0.8, wet: 1, damping: 0.2 }, 1);
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(tailEnergy(mix.left, 600)).toBeGreaterThan(0);
+  });
+
+  it("stays dry when reverb is enabled but the track send is zero", () => {
+    const project = reverbProject({ enabled: true, roomSize: 0.8, wet: 1 }, 0);
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(tailEnergy(mix.left, 600)).toBe(0);
+  });
+
+  it("stays dry when the reverb bus is disabled", () => {
+    const project = reverbProject(undefined, 1);
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(tailEnergy(mix.left, 600)).toBe(0);
   });
 });
 

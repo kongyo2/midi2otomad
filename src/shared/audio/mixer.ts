@@ -1,5 +1,10 @@
 import type { AutomationPoint, Note, Project, Sample, Track } from "../schemas/project";
-import { pitchRatio } from "../music/pitch";
+import { pitchRatio, semitonesToRatio } from "../music/pitch";
+import { cubicHermite } from "./interpolation";
+import { envelopeLevel } from "./envelope";
+import { pitchOffsetSemitones } from "./pitchmod";
+import { createBiquadState, designBiquad, processBiquadSample, type BiquadCoeffs } from "./filter";
+import { createReverb } from "./reverb";
 
 /** Decoded source material: one Float32Array per channel, all the same length. */
 export interface PcmAudio {
@@ -59,8 +64,14 @@ function sampleAutomation(points: AutomationPoint[], t: number): number {
   return prev.v;
 }
 
+interface LoopRegion {
+  start: number;
+  end: number;
+  length: number;
+}
+
 /** Resolve the effective loop region in source-sample units. */
-function resolveLoop(sample: Sample, src: PcmAudio): { start: number; end: number; length: number } | null {
+function resolveLoop(sample: Sample, src: PcmAudio): LoopRegion | null {
   if (!sample.loop.enabled) {
     return null;
   }
@@ -74,22 +85,38 @@ function resolveLoop(sample: Sample, src: PcmAudio): { start: number; end: numbe
   return { start, end, length };
 }
 
-function readInterpolated(channel: Float32Array, pos: number, wrap: { start: number; length: number } | null): number {
+/** Fetch a single source sample, wrapping inside the loop when periodic and clamping otherwise. */
+function sampleAt(channel: Float32Array, frames: number, index: number, region: LoopRegion | null): number {
+  let idx: number;
+  if (region !== null) {
+    idx = region.start + ((((index - region.start) % region.length) + region.length) % region.length);
+  } else {
+    idx = index < 0 ? 0 : index >= frames ? frames - 1 : index;
+  }
+  const value = channel[idx]!;
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** Read a (possibly fractional) source position with linear or cubic-hermite interpolation. */
+function readSample(
+  channel: Float32Array,
+  frames: number,
+  pos: number,
+  hermite: boolean,
+  region: LoopRegion | null,
+): number {
   const i0 = Math.floor(pos);
   const frac = pos - i0;
-  let a = channel[i0]!;
-  let nextIndex = i0 + 1;
-  if (wrap !== null && nextIndex >= wrap.start + wrap.length) {
-    nextIndex = wrap.start + ((nextIndex - wrap.start) % wrap.length);
+  if (!hermite) {
+    const a = sampleAt(channel, frames, i0, region);
+    const b = sampleAt(channel, frames, i0 + 1, region);
+    return a + (b - a) * frac;
   }
-  let b = channel[nextIndex]!;
-  if (!Number.isFinite(a)) {
-    a = 0;
-  }
-  if (!Number.isFinite(b)) {
-    b = 0;
-  }
-  return a + (b - a) * frac;
+  const y0 = sampleAt(channel, frames, i0 - 1, region);
+  const y1 = sampleAt(channel, frames, i0, region);
+  const y2 = sampleAt(channel, frames, i0 + 1, region);
+  const y3 = sampleAt(channel, frames, i0 + 2, region);
+  return cubicHermite(y0, y1, y2, y3, frac);
 }
 
 function softClip(x: number): number {
@@ -143,72 +170,131 @@ function buildTrackDynamics(track: Track, frames: number, sampleRate: number): F
   return out;
 }
 
+interface SendBus {
+  l: Float32Array;
+  r: Float32Array;
+}
+
+interface Buses {
+  left: Float32Array;
+  right: Float32Array;
+  send: SendBus | null;
+}
+
 function renderNote(
   note: Note,
   sample: Sample,
   src: PcmAudio,
   track: Track,
   trackDyn: Float32Array | null,
-  left: Float32Array,
-  right: Float32Array,
+  buses: Buses,
   outRate: number,
   masterGain: number,
   pan: { left: number; right: number },
 ): void {
-  const totalFrames = left.length;
-  const ratio = pitchRatio(note.pitch, sample.basePitch, sample.tuneCents);
-  const increment = (src.sampleRate / outRate) * ratio;
+  const total = buses.left.length;
+  const baseRatio = pitchRatio(note.pitch, sample.basePitch, sample.tuneCents);
+  const baseIncrement = (src.sampleRate / outRate) * baseRatio;
   const startFrame = Math.round(note.startSec * outRate);
   const noteFrames = Math.max(1, Math.round(note.durationSec * outRate));
-  const attackFrames = Math.max(1, Math.round((sample.envelope.attackMs / 1000) * outRate));
-  const releaseFrames = Math.max(1, Math.round((sample.envelope.releaseMs / 1000) * outRate));
+  const releaseFrames = Math.max(0, Math.round((sample.envelope.releaseMs / 1000) * outRate));
   const voiceFrames = noteFrames + releaseFrames;
+  const gateSec = note.durationSec;
 
   const velGain = velocityToGain(note.velocity);
   const staticGain = velGain * sample.gain * track.gain * masterGain;
   const loop = resolveLoop(sample, src);
-  const wrap = loop === null ? null : { start: loop.start, length: loop.length };
+  const hermite = sample.interpolation === "hermite";
+
   const ch0 = src.channels[0];
   if (ch0 === undefined) {
     return;
   }
   const ch1 = src.channels[1] ?? ch0;
 
+  const coeffs: BiquadCoeffs | null = sample.filter.enabled
+    ? designBiquad(sample.filter.type, sample.filter.cutoffHz, outRate, sample.filter.q, sample.filter.gainDb)
+    : null;
+  const stateL = createBiquadState();
+  const stateR = createBiquadState();
+  const send = buses.send;
+  const reverbSend = track.reverbSend;
+
   let srcPos = 0;
   for (let i = 0; i < voiceFrames; i += 1) {
     const outIdx = startFrame + i;
+    const tSec = i / outRate;
+    const increment = baseIncrement * semitonesToRatio(pitchOffsetSemitones(sample.pitchMod, tSec));
     if (outIdx < 0) {
       srcPos += increment;
       continue;
     }
-    if (outIdx >= totalFrames) {
+    if (outIdx >= total) {
       break;
     }
 
-    const attackGain = i < attackFrames ? i / attackFrames : 1;
-    const releaseGain = i < noteFrames ? 1 : Math.max(0, 1 - (i - noteFrames) / releaseFrames);
-    const env = attackGain * releaseGain;
-
     let pos = srcPos;
     let alive = true;
+    let region: LoopRegion | null = null;
     if (loop !== null) {
       if (pos >= loop.end) {
         pos = loop.start + ((pos - loop.start) % loop.length);
+      }
+      if (pos >= loop.start) {
+        region = loop;
       }
     } else if (pos >= src.frames - 1) {
       alive = false;
     }
 
-    if (alive && env > 0) {
-      const dyn = trackDyn === null ? 1 : trackDyn[outIdx]!;
-      const amp = env * staticGain * dyn;
-      const sL = readInterpolated(ch0, pos, wrap) * amp;
-      const sR = readInterpolated(ch1, pos, wrap) * amp;
-      left[outIdx] = left[outIdx]! + sL * pan.left;
-      right[outIdx] = right[outIdx]! + sR * pan.right;
+    if (alive) {
+      let sL = readSample(ch0, src.frames, pos, hermite, region);
+      let sR = readSample(ch1, src.frames, pos, hermite, region);
+      if (coeffs !== null) {
+        sL = processBiquadSample(coeffs, stateL, sL);
+        sR = processBiquadSample(coeffs, stateR, sR);
+      }
+      const env = envelopeLevel(sample.envelope, tSec, gateSec);
+      if (env > 0) {
+        const dyn = trackDyn === null ? 1 : trackDyn[outIdx]!;
+        const amp = env * staticGain * dyn;
+        const outL = sL * amp * pan.left;
+        const outR = sR * amp * pan.right;
+        buses.left[outIdx] = buses.left[outIdx]! + outL;
+        buses.right[outIdx] = buses.right[outIdx]! + outR;
+        if (send !== null && reverbSend > 0) {
+          send.l[outIdx] = send.l[outIdx]! + outL * reverbSend;
+          send.r[outIdx] = send.r[outIdx]! + outR * reverbSend;
+        }
+      }
     }
 
     srcPos += increment;
+  }
+}
+
+function reverbTailSeconds(project: Project): number {
+  const r = project.reverb;
+  if (!r.enabled) {
+    return 0;
+  }
+  return 0.5 + r.roomSize * 4 + r.preDelayMs / 1000;
+}
+
+function applyReverb(project: Project, outRate: number, send: SendBus, left: Float32Array, right: Float32Array): void {
+  const r = project.reverb;
+  const verb = createReverb(outRate, {
+    roomSize: r.roomSize,
+    damping: r.damping,
+    width: r.width,
+    wet: r.wet,
+    dry: 0,
+    preDelayMs: r.preDelayMs,
+  });
+  const wet = verb.processBlock(send.l, send.r);
+  for (let i = 0; i < left.length; i += 1) {
+    left[i] = left[i]! + wet.left[i]!;
+    right[i] = right[i]! + wet.right[i]!;
   }
 }
 
@@ -216,11 +302,15 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
   const outRate = project.sampleRate;
   const sampleById = new Map<string, Sample>(project.samples.map((s) => [s.id, s]));
   const tailSec = options.tailSec ?? 0.25;
-  const end = projectEndSeconds(project, sampleById) + tailSec;
+  const end = projectEndSeconds(project, sampleById) + tailSec + reverbTailSeconds(project);
   const frames = Math.max(MIN_FRAMES, Math.ceil(end * outRate) + 1);
 
   const left = new Float32Array(frames);
   const right = new Float32Array(frames);
+  const send: SendBus | null = project.reverb.enabled
+    ? { l: new Float32Array(frames), r: new Float32Array(frames) }
+    : null;
+  const buses: Buses = { left, right, send };
 
   const solo = anySolo(project.tracks);
   const masterGain = project.masterGain;
@@ -241,8 +331,12 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
       if (sample === undefined || src === undefined || src.frames < 2) {
         continue;
       }
-      renderNote(note, sample, src, track, trackDyn, left, right, outRate, masterGain, pan);
+      renderNote(note, sample, src, track, trackDyn, buses, outRate, masterGain, pan);
     }
+  }
+
+  if (send !== null) {
+    applyReverb(project, outRate, send, left, right);
   }
 
   let peak = 0;

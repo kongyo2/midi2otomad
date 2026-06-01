@@ -64,9 +64,13 @@ describe("SampleInspector", () => {
     fireEvent.change(sliders[2]!, { target: { value: "2" } });
     expect(value.updateSample).toHaveBeenCalledWith("s1", { gain: 2 });
     fireEvent.change(sliders[3]!, { target: { value: "10" } });
-    expect(value.updateSample).toHaveBeenCalledWith("s1", { envelope: { attackMs: 10, releaseMs: 90 } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      envelope: expect.objectContaining({ attackMs: 10, releaseMs: 90 }),
+    });
     fireEvent.change(sliders[4]!, { target: { value: "200" } });
-    expect(value.updateSample).toHaveBeenCalledWith("s1", { envelope: { attackMs: 4, releaseMs: 200 } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      envelope: expect.objectContaining({ attackMs: 4, releaseMs: 200 }),
+    });
   });
 
   it("previews when decoded audio is available", () => {
