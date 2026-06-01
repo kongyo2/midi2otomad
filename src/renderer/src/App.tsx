@@ -1,92 +1,100 @@
-import { useEffect, useState } from "react";
-import type { Project } from "../../shared/schemas/project";
-import type { MediaProbe } from "../../shared/media";
+import { useEffect, useRef, useState } from "react";
+import { useStudio } from "./state/StudioContext";
+import { TopBar } from "./components/TopBar";
+import { SampleLibrary } from "./components/SampleLibrary";
+import { SampleInspector } from "./components/SampleInspector";
+import { Timeline } from "./components/Timeline";
+import { TrackInspector } from "./components/TrackInspector";
+import { HelpPanel } from "./components/HelpPanel";
 
-export function App() {
-  const [electronVersion, setElectronVersion] = useState("…");
-  const [project, setProject] = useState<Project | null>(null);
-  const [pong, setPong] = useState("");
-  const [media, setMedia] = useState<MediaProbe | null>(null);
+export function App(): React.JSX.Element {
+  const { importMidiBytes, ingestAudio, togglePlay, toast, busy } = useStudio();
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepth = useRef(0);
 
   useEffect(() => {
-    void window.api.getVersion().then(setElectronVersion);
-    void window.api.defaultProject().then(setProject);
-    void window.api.probeMedia().then(setMedia);
-  }, []);
+    const onKey = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName ?? "";
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {
+        return;
+      }
+      if (event.code === "Space") {
+        event.preventDefault();
+        togglePlay();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [togglePlay]);
+
+  const handleDrop = async (event: React.DragEvent): Promise<void> => {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragActive(false);
+    const files = Array.from(event.dataTransfer.files);
+    const midiFiles = files.filter((file) => /\.midi?$/i.test(file.name));
+    const audioFiles = files.filter((file) => !/\.midi?$/i.test(file.name));
+    const midiBuffers = await Promise.all(
+      midiFiles.map(async (midi) => ({ name: midi.name, bytes: new Uint8Array(await midi.arrayBuffer()) })),
+    );
+    for (const midi of midiBuffers) {
+      importMidiBytes(midi.bytes, midi.name);
+    }
+    if (audioFiles.length > 0) {
+      await ingestAudio(audioFiles);
+    }
+  };
 
   return (
-    <div className="app">
-      <header className="app__header">
-        <div className="app__brand">
-          <span className="app__logo">🎹</span>
-          <h1 className="app__title">midi2otomad</h1>
+    <div
+      className="studio"
+      onDragEnter={(event) => {
+        event.preventDefault();
+        dragDepth.current += 1;
+        setDragActive(true);
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={() => {
+        dragDepth.current -= 1;
+        if (dragDepth.current <= 0) {
+          setDragActive(false);
+        }
+      }}
+      onDrop={(event) => void handleDrop(event)}
+    >
+      <TopBar />
+      <div className="studio__body">
+        <aside className="studio__left">
+          <SampleLibrary />
+          <SampleInspector />
+        </aside>
+        <main className="studio__center">
+          <Timeline />
+        </main>
+        <aside className="studio__right">
+          <TrackInspector />
+          <HelpPanel />
+        </aside>
+      </div>
+
+      {dragActive ? (
+        <div className="dropzone-overlay">
+          <div className="dropzone-overlay__card">
+            <div className="dropzone-overlay__icon">🎼</div>
+            <p className="dropzone-overlay__title">ここにドロップ</p>
+            <p className="dropzone-overlay__sub">.mid → アレンジ読込 ／ wav・mp3 → 音声素材として追加</p>
+          </div>
         </div>
-        <span className="app__badge">Electron {electronVersion}</span>
-      </header>
+      ) : null}
 
-      <main className="app__main">
-        <section className="panel">
-          <h2 className="panel__heading">プロジェクト</h2>
-          {project === null ? (
-            <p className="panel__muted">読み込み中…</p>
-          ) : (
-            <dl className="kv">
-              <div className="kv__row">
-                <dt>名前</dt>
-                <dd>{project.name}</dd>
-              </div>
-              <div className="kv__row">
-                <dt>BPM</dt>
-                <dd>{project.bpm}</dd>
-              </div>
-              <div className="kv__row">
-                <dt>PPQ</dt>
-                <dd>{project.ppq}</dd>
-              </div>
-              <div className="kv__row">
-                <dt>トラック数</dt>
-                <dd>{project.tracks.length}</dd>
-              </div>
-            </dl>
-          )}
-        </section>
+      {busy !== null ? (
+        <div className="busybar">
+          <span className="busybar__spinner" /> {busy}
+        </div>
+      ) : null}
 
-        <section className="panel">
-          <h2 className="panel__heading">IPC 疎通</h2>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              void window.api.ping().then(setPong);
-            }}
-          >
-            ping を送信
-          </button>
-          {pong !== "" && <p className="panel__ok">main 応答: {pong}</p>}
-        </section>
-
-        <section className="panel">
-          <h2 className="panel__heading">メディアバックエンド</h2>
-          {media === null ? (
-            <p className="panel__muted">初期化中…</p>
-          ) : (
-            <dl className="kv">
-              <div className="kv__row">
-                <dt>バックエンド</dt>
-                <dd>{media.backend}</dd>
-              </div>
-              <div className="kv__row">
-                <dt>FFmpeg</dt>
-                <dd>{media.ffmpegVersion}</dd>
-              </div>
-            </dl>
-          )}
-        </section>
-
-        <p className="app__note">
-          初期セットアップ完了。ここに今後、ピアノロール / タイムライン / サンプル管理 UI を実装していきます。
-        </p>
-      </main>
+      {toast !== null ? <div className="toast">{toast}</div> : null}
     </div>
   );
 }

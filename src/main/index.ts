@@ -1,36 +1,32 @@
 import { app, BrowserWindow, ipcMain, session, shell } from "electron";
 import { join } from "node:path";
 import { IPC } from "../shared/ipc";
-import { parseProject, type Project } from "../shared/schemas/project";
+import type { BounceRequest } from "../shared/media";
+import { createEmptyProject } from "../shared/schemas/project";
 import { probeMedia } from "./media/backend";
+import { bounce, openAudio, openMidi } from "./dialogs";
 
-function createDefaultProject(): Project {
-  return parseProject({
-    version: 1,
-    name: "Untitled 音MAD",
-    bpm: 140,
-    ppq: 480,
-    samples: [],
-    tracks: [],
-  });
-}
+let mainWindow: BrowserWindow | null = null;
 
 function registerIpcHandlers(): void {
   ipcMain.handle(IPC.ping, () => "pong");
   ipcMain.handle(IPC.getVersion, () => process.versions.electron);
-  ipcMain.handle(IPC.defaultProject, () => createDefaultProject());
+  ipcMain.handle(IPC.defaultProject, () => createEmptyProject());
   ipcMain.handle(IPC.probeMedia, () => probeMedia());
+  ipcMain.handle(IPC.openMidi, () => openMidi(mainWindow));
+  ipcMain.handle(IPC.openAudio, () => openAudio(mainWindow));
+  ipcMain.handle(IPC.bounce, (_event, request: BounceRequest) => bounce(mainWindow, request));
 }
 
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 960,
-    minHeight: 600,
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 640,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: "#1e1e24",
+    backgroundColor: "#16161c",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
@@ -40,7 +36,11 @@ function createWindow(): void {
   });
 
   mainWindow.on("ready-to-show", () => {
-    mainWindow.show();
+    mainWindow?.show();
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
   });
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
