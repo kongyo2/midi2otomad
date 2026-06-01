@@ -28,16 +28,17 @@ export interface DetectOptions extends YinOptions {
 }
 
 const DEFAULT_THRESHOLD = 0.1;
-// Detect across the same MIDI range the sample inspector lets users edit (24–96).
+// Accept pitches across the MIDI range the sample inspector lets users edit (24–96).
 const DETECTABLE_MIDI_LOW = 24;
 const DETECTABLE_MIDI_HIGH = 96;
-const DEFAULT_MIN_FREQUENCY = midiToFrequency(DETECTABLE_MIDI_LOW);
+// Frames are sized for the editable floor, but the search reaches a little lower
+// so genuinely sub-editable samples are detected (and rejected) not pinned to it.
+const EDITABLE_FLOOR_HZ = midiToFrequency(DETECTABLE_MIDI_LOW);
+const DEFAULT_MIN_FREQUENCY = 20;
 const DEFAULT_MAX_FREQUENCY = midiToFrequency(DETECTABLE_MIDI_HIGH);
 const ENERGY_FLOOR = 1e-9;
 const DEFAULT_MIN_PROBABILITY = 0.8;
 const DEFAULT_MAX_SCAN_FRAMES = 256;
-const MIDI_MIN = 0;
-const MIDI_MAX = 127;
 
 function cumulativeMeanNormalizedDifference(frame: Float32Array, tauMax: number): Float32Array {
   const halfWindow = frame.length >> 1;
@@ -122,17 +123,16 @@ export function detectPitchYin(
   }
 
   const cmndf = cumulativeMeanNormalizedDifference(frame, tauMax);
-  for (let t = 2; t < tauMin; t += 1) {
-    if (cmndf[t]! < threshold) {
-      // A strong period below the minimum lag means the fundamental is above
-      // maxFrequency; reject rather than locking onto an octave-down alias.
-      return null;
-    }
-  }
   const tau = pickTau(cmndf, threshold, tauMin, searchEnd);
   if (!Number.isFinite(cmndf[tau]!)) {
     // A constant/DC frame yields an all-zero difference function, normalizing to
     // NaN; treat it as unpitched rather than leaking NaN into the estimate.
+    return null;
+  }
+  const half = tau >> 1;
+  if (half >= 2 && cmndf[half]! < threshold) {
+    // Half the detected period is itself a strong period above maxFrequency, so
+    // the pick is an octave-down alias of an out-of-range fundamental; reject it.
     return null;
   }
   const refinedTau = parabolicRefine(cmndf, tau);
@@ -190,10 +190,9 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
     return null;
   }
   const channel = loudestChannel(pcm.channels);
-  const minFrequency = options.minFrequency ?? DEFAULT_MIN_FREQUENCY;
   const minProbability = options.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const maxScanFrames = options.maxScanFrames ?? DEFAULT_MAX_SCAN_FRAMES;
-  const frameSize = Math.min(channel.length, frameSizeFor(pcm.sampleRate, minFrequency));
+  const frameSize = Math.min(channel.length, frameSizeFor(pcm.sampleRate, EDITABLE_FLOOR_HZ));
   // Widen the hop on long clips so the loop scans at most ~maxScanFrames frames,
   // bounding work even when the audio is entirely silent or unpitched.
   const span = channel.length - frameSize;
@@ -227,7 +226,11 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
   }
 
   const midi = weightedMidi / weight;
-  const basePitch = Math.max(MIDI_MIN, Math.min(MIDI_MAX, Math.round(midi)));
+  const basePitch = Math.round(midi);
+  if (basePitch < DETECTABLE_MIDI_LOW) {
+    // Below C1 — outside the editable range; report no pitch rather than C1.
+    return null;
+  }
   // Playback adds tuneCents in pitchRatio, so store the correction that pulls
   // the sample onto basePitch (positive when the sample is flat of that note).
   const tuneCents = Math.round((basePitch - midi) * 100);

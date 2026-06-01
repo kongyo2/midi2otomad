@@ -67,6 +67,19 @@ describe("detectPitchYin", () => {
     expect(detectPitchYin(sine(3000, sampleRate, 4096), sampleRate)).toBeNull();
   });
 
+  it("detects an in-range fundamental with a stronger upper harmonic, not its octave", () => {
+    const sampleRate = 44100;
+    const frame = new Float32Array(4096);
+    for (let i = 0; i < frame.length; i += 1) {
+      const t = i / sampleRate;
+      // 1100 Hz fundamental (in range) under a louder 2200 Hz harmonic above the ceiling.
+      frame[i] = 0.3 * Math.sin(2 * Math.PI * 1100 * t) + 0.6 * Math.sin(2 * Math.PI * 2200 * t);
+    }
+    const est = detectPitchYin(frame, sampleRate);
+    expect(est).not.toBeNull();
+    expect(Math.abs(centsOff(est!.frequencyHz, 1100))).toBeLessThan(10);
+  });
+
   it("returns null for a frame too short for the search range", () => {
     expect(detectPitchYin(sine(440, 44100, 16), 44100)).toBeNull();
   });
@@ -171,6 +184,14 @@ describe("detectSamplePitch", () => {
     channel.set(sine(880, sampleRate, Math.floor(0.15 * sampleRate)), glitchStart);
     const est = detectSamplePitch({ sampleRate, channels: [channel], frames });
     expect(est!.basePitch).toBe(69);
+  });
+
+  it("returns null for sub-bass below the editable pitch floor instead of pinning to C1", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    // 30 Hz is below C1 (MIDI 24 ~ 32.7 Hz), the lowest editable base pitch.
+    const pcm: PcmAudio = { sampleRate, channels: [sine(30, sampleRate, frames)], frames };
+    expect(detectSamplePitch(pcm)).toBeNull();
   });
 
   it("detects a low bass tone in the editable range, below the old 55 Hz floor", () => {
