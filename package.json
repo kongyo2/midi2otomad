@@ -20,7 +20,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "package": "electron-vite build && electron-builder",
-    "package:dir": "electron-vite build && electron-builder --dir"
+    "package:dir": "electron-vite build && electron-builder --dir",
+    "selftest": "esbuild scripts/selftest.ts --bundle --platform=node --format=esm --external:node-av --outfile=tmp/selftest.mjs --log-level=warning && node tmp/selftest.mjs"
   },
   "dependencies": {
     "@tonejs/midi": "^2.0.28",

@@ -6,6 +6,9 @@ const api: BridgeApi = {
   getVersion: () => ipcRenderer.invoke(IPC.getVersion),
   defaultProject: () => ipcRenderer.invoke(IPC.defaultProject),
   probeMedia: () => ipcRenderer.invoke(IPC.probeMedia),
+  openMidi: () => ipcRenderer.invoke(IPC.openMidi),
+  openAudio: () => ipcRenderer.invoke(IPC.openAudio),
+  bounce: (request) => ipcRenderer.invoke(IPC.bounce, request),
 };
 
 try {
