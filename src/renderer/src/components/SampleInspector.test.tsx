@@ -162,6 +162,20 @@ describe("SampleInspector", () => {
     });
   });
 
+  it("exposes the glide curve and vibrato fade controls", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("グライドカーブ"), { target: { value: "2" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ glideCurve: 2 }),
+    });
+    fireEvent.change(screen.getByLabelText("ビブラートフェード"), { target: { value: "300" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ vibratoFadeMs: 300 }),
+    });
+  });
+
   it("previews when decoded audio is available", () => {
     const pcm: PcmAudio = { sampleRate: 48000, channels: [new Float32Array(4)], frames: 4 };
     const value = withSample();

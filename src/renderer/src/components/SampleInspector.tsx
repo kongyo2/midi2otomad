@@ -55,9 +55,11 @@ const FILTER_FIELDS: NumField<Filter>[] = [
 const PITCH_FIELDS: NumField<PitchMod>[] = [
   { key: "glideSemitones", label: "グライド量", min: -36, max: 36, step: 1, display: (v) => `${v.toFixed(0)} st` },
   { key: "glideMs", label: "グライド時間", min: 0, max: 4000, step: 1, display: ms },
+  { key: "glideCurve", label: "グライドカーブ", min: -8, max: 8, step: 0.1, display: (v) => v.toFixed(1) },
   { key: "vibratoCents", label: "ビブラート深さ", min: 0, max: 600, step: 1, display: (v) => `${v.toFixed(0)} cent` },
   { key: "vibratoHz", label: "ビブラート速度", min: 0, max: 16, step: 0.1, display: (v) => `${v.toFixed(1)} Hz` },
   { key: "vibratoDelayMs", label: "ビブラート遅延", min: 0, max: 2000, step: 1, display: ms },
+  { key: "vibratoFadeMs", label: "ビブラートフェード", min: 0, max: 2000, step: 1, display: ms },
 ];
 
 const FILTER_LABELS: Record<FilterType, string> = {

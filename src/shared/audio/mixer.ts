@@ -5,7 +5,7 @@ import { envelopeLevel } from "./envelope";
 import { pitchOffsetSemitones } from "./pitchmod";
 import { createBiquadState, designBiquad, processBiquadSample, type BiquadCoeffs } from "./filter";
 import { lfoValue } from "./lfo";
-import { createReverb } from "./reverb";
+import { createReverb, reverbDecaySeconds } from "./reverb";
 
 /** Decoded source material: one Float32Array per channel, all the same length. */
 export interface PcmAudio {
@@ -222,11 +222,11 @@ function renderNote(
 
   const filter = sample.filter;
   const filterModulated = filter.enabled && (filter.envAmount !== 0 || filter.lfoDepth !== 0);
+  const nyquist = outRate * 0.49;
   const staticCoeffs: BiquadCoeffs | null =
     filter.enabled && !filterModulated
-      ? designBiquad(filter.type, filter.cutoffHz, outRate, filter.q, filter.gainDb)
+      ? designBiquad(filter.type, Math.min(filter.cutoffHz, nyquist), outRate, filter.q, filter.gainDb)
       : null;
-  const nyquist = outRate * 0.49;
   const stateL = createBiquadState();
   const stateR = createBiquadState();
   const send = buses.send;
@@ -293,7 +293,7 @@ function reverbTailSeconds(project: Project): number {
   if (!r.enabled) {
     return 0;
   }
-  return 0.5 + r.roomSize * 4 + r.preDelayMs / 1000;
+  return r.preDelayMs / 1000 + reverbDecaySeconds(r.roomSize);
 }
 
 function applyReverb(project: Project, outRate: number, send: SendBus, left: Float32Array, right: Float32Array): void {

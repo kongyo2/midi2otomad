@@ -1,6 +1,7 @@
 import type { Sample } from "../../../shared/schemas/project";
 import type { PcmAudio } from "../../../shared/audio/mixer";
 import { pitchRatio } from "../../../shared/music/pitch";
+import { envelopeLevel } from "../../../shared/audio/envelope";
 import { getAudioContext, resumeAudioContext } from "./context";
 
 /** Audition a single material one-shot at the given pitch (defaults to base pitch). */
@@ -25,23 +26,18 @@ export function previewSample(pcm: PcmAudio, sample: Sample, pitch?: number): vo
   const env = sample.envelope;
   const now = ctx.currentTime;
   const peak = sample.gain;
-  const sustainLevel = peak * env.sustain;
-  const onset = now + env.delayMs / 1000;
-  const attack = Math.max(0.001, env.attackMs / 1000);
-  const hold = env.holdMs / 1000;
-  const decay = env.decayMs / 1000;
-  const release = Math.max(0.001, env.releaseMs / 1000);
+  // Audition the exact engine envelope by sampling envelopeLevel into a value
+  // curve, so attack/decay/release shapes match playback and export.
   const sustainHold = sample.loop.enabled ? 1.4 : Math.min(2.2, fullLength);
-
-  const decayEnd = onset + attack + hold + decay;
-  const sustainEnd = decayEnd + sustainHold;
-  gain.gain.setValueAtTime(0, now);
-  gain.gain.setValueAtTime(0, onset);
-  gain.gain.linearRampToValueAtTime(peak, onset + attack);
-  gain.gain.setValueAtTime(peak, onset + attack + hold);
-  gain.gain.linearRampToValueAtTime(sustainLevel, decayEnd);
-  gain.gain.setValueAtTime(sustainLevel, sustainEnd);
-  gain.gain.linearRampToValueAtTime(0, sustainEnd + release);
+  const gateSec = (env.delayMs + env.attackMs + env.holdMs + env.decayMs) / 1000 + sustainHold;
+  const total = gateSec + env.releaseMs / 1000;
+  const points = Math.max(2, Math.min(8000, Math.round(total * 1000)));
+  const curve = new Float32Array(points);
+  for (let i = 0; i < points; i += 1) {
+    const t = (i / (points - 1)) * total;
+    curve[i] = envelopeLevel(env, t, gateSec) * peak;
+  }
+  gain.gain.setValueCurveAtTime(curve, now, total);
 
   if (sample.filter.enabled) {
     const filter = ctx.createBiquadFilter();
@@ -56,5 +52,5 @@ export function previewSample(pcm: PcmAudio, sample: Sample, pitch?: number): vo
   }
   gain.connect(ctx.destination);
   source.start(now);
-  source.stop(sustainEnd + release + 0.05);
+  source.stop(now + total + 0.05);
 }

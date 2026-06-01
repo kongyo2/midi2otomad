@@ -14,7 +14,7 @@ const ctx = vi.hoisted(() => {
     stop: vi.fn(),
   });
   const makeGain = () => ({
-    gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+    gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn(), setValueCurveAtTime: vi.fn() },
     connect: vi.fn(),
   });
   const makeFilter = () => ({
@@ -89,9 +89,26 @@ describe("previewSample", () => {
 
   it("shapes the preview gain toward the sustain level", () => {
     previewSample(pcm, sample({ gain: 0.8, envelope: { attackMs: 5, decayMs: 50, sustain: 0.5, releaseMs: 100 } }));
-    const ramps = lastGain().gain.linearRampToValueAtTime.mock.calls.map((call) => call[0]);
-    expect(ramps).toContainEqual(expect.closeTo(0.8, 6));
-    expect(ramps).toContainEqual(expect.closeTo(0.4, 6));
+    const curve = lastGain().gain.setValueCurveAtTime.mock.calls.at(-1)![0] as Float32Array;
+    expect(Math.max(...curve)).toBeCloseTo(0.8, 2);
+    expect(curve[curve.length - 1]).toBeCloseTo(0, 5);
+    expect(Array.from(curve).some((v) => Math.abs(v - 0.4) < 0.02)).toBe(true);
+  });
+
+  it("honors the envelope curve shape in the preview", () => {
+    previewSample(pcm, sample({ envelope: { attackMs: 200, attackCurve: 0, releaseMs: 50 } }));
+    previewSample(pcm, sample({ envelope: { attackMs: 200, attackCurve: 5, releaseMs: 50 } }));
+    const results = ctx.createGain.mock.results;
+    const linear = results[0]!.value.gain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
+    const shaped = results[1]!.value.gain.setValueCurveAtTime.mock.calls[0]![0] as Float32Array;
+    let differs = false;
+    for (let i = 0; i < Math.min(linear.length, shaped.length); i += 1) {
+      if (Math.abs(linear[i]! - shaped[i]!) > 1e-3) {
+        differs = true;
+        break;
+      }
+    }
+    expect(differs).toBe(true);
   });
 
   it("routes through a biquad filter when the sample filter is enabled", () => {

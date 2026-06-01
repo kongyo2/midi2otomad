@@ -151,3 +151,16 @@ class Freeverb implements Reverb {
 export function createReverb(sampleRate: number, params: ReverbParams): Reverb {
   return new Freeverb(sampleRate, params);
 }
+
+const LONGEST_COMB_SECONDS = (COMB_TUNINGS[COMB_TUNINGS.length - 1]! + STEREO_SPREAD) / 44100;
+const SILENCE_THRESHOLD = 0.001;
+
+/**
+ * Approximate time (seconds) for the reverb tail to decay to roughly -60 dB,
+ * derived from the longest comb's delay and its `roomSize`-driven feedback. The
+ * mixer uses this to size the render buffer so a long tail is not truncated.
+ */
+export function reverbDecaySeconds(roomSize: number): number {
+  const feedback = roomSize * SCALE_ROOM + OFFSET_ROOM;
+  return (LONGEST_COMB_SECONDS * Math.log(SILENCE_THRESHOLD)) / Math.log(feedback);
+}

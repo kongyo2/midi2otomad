@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createReverb, type ReverbParams } from "./reverb";
+import { createReverb, reverbDecaySeconds, type ReverbParams } from "./reverb";
 
 const FS = 48000;
 
@@ -77,6 +77,21 @@ describe("createReverb mixing", () => {
     const direct = createReverb(FS, rev()).processBlock(impulse(16000), impulse(16000));
     const delayed = createReverb(FS, rev({ preDelayMs: 50 })).processBlock(impulse(16000), impulse(16000));
     expect(firstAudible(delayed.left, 1e-4)).toBeGreaterThan(firstAudible(direct.left, 1e-4) + 1000);
+  });
+});
+
+describe("reverbDecaySeconds", () => {
+  it("returns a long decay for a large room", () => {
+    expect(reverbDecaySeconds(1)).toBeGreaterThan(10);
+  });
+
+  it("returns a short decay for a small room", () => {
+    expect(reverbDecaySeconds(0)).toBeLessThan(1);
+  });
+
+  it("grows monotonically with room size", () => {
+    expect(reverbDecaySeconds(0.8)).toBeGreaterThan(reverbDecaySeconds(0.4));
+    expect(reverbDecaySeconds(0.4)).toBeGreaterThan(reverbDecaySeconds(0.1));
   });
 });
 

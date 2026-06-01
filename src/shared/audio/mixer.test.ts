@@ -611,6 +611,23 @@ describe("mixProject per-sample filter", () => {
     };
     expect(energy(625)).toBeGreaterThan(energy(875) * 2);
   });
+
+  it("keeps an above-Nyquist cutoff stable at low render rates", () => {
+    const src = brightSource(4000, 8000);
+    const project = makeProject({
+      sampleRate: 8000,
+      samples: [
+        sampleRaw({
+          envelope: { attackMs: 0, releaseMs: 0 },
+          filter: { enabled: true, type: "lowpass", cutoffHz: 6000 },
+        }),
+      ],
+      tracks: [trackRaw()],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: src }), { limiter: false });
+    expect(allFinite(mix.left)).toBe(true);
+    expect(mix.peak).toBeLessThan(8);
+  });
 });
 
 describe("mixProject reverb send", () => {
@@ -641,6 +658,12 @@ describe("mixProject reverb send", () => {
     const project = reverbProject(undefined, 1);
     const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
     expect(tailEnergy(mix.left, 600)).toBe(0);
+  });
+
+  it("extends the render tail to fit a long reverb decay", () => {
+    const project = reverbProject({ enabled: true, roomSize: 1, wet: 1 }, 1);
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.durationSec).toBeGreaterThan(10);
   });
 });
 
