@@ -152,29 +152,34 @@ function median(values: number[]): number {
   return sorted[sorted.length >> 1]!;
 }
 
-function channelEnergy(channel: Float32Array): number {
+/**
+ * Find the start (on the hop grid) of the `scanLen`-sample window carrying the
+ * most energy. A long clip can't be scanned in full within the frame budget, so
+ * the bounded scan follows the audio here rather than truncating to the opening
+ * seconds — letting it reach a note placed late, after a silent intro. The
+ * sliding sum touches each sample a bounded number of times, so it stays O(n).
+ */
+function highestEnergyWindowStart(channel: Float32Array, hop: number, scanLen: number): number {
+  const lastStart = channel.length - scanLen;
   let energy = 0;
-  for (let i = 0; i < channel.length; i += 1) {
+  for (let i = 0; i < scanLen; i += 1) {
     energy += channel[i]! * channel[i]!;
   }
-  return energy;
-}
-
-/**
- * Pick the highest-energy channel rather than a signed average, which keeps
- * hard-panned material and avoids cancelling phase-inverted stereo to silence.
- */
-function loudestChannel(channels: Float32Array[]): Float32Array {
-  let best = channels[0]!;
-  let bestEnergy = channelEnergy(best);
-  for (let c = 1; c < channels.length; c += 1) {
-    const energy = channelEnergy(channels[c]!);
+  let bestEnergy = energy;
+  let bestStart = 0;
+  for (let start = hop; start <= lastStart; start += hop) {
+    for (let i = start - hop; i < start; i += 1) {
+      energy -= channel[i]! * channel[i]!;
+    }
+    for (let i = start - hop + scanLen; i < start + scanLen; i += 1) {
+      energy += channel[i]! * channel[i]!;
+    }
     if (energy > bestEnergy) {
-      best = channels[c]!;
       bestEnergy = energy;
+      bestStart = start;
     }
   }
-  return best;
+  return bestStart;
 }
 
 /**
@@ -182,35 +187,42 @@ function loudestChannel(channels: Float32Array[]): Float32Array {
  * overlapping frames and aggregating the voiced ones. The central pitch is the
  * median of voiced frames in the (log-frequency) MIDI domain, refined by a
  * confidence-weighted mean of the inliers within a semitone — robust against
- * attack transients, octave jumps, and noisy tails.
+ * attack transients, octave jumps, and noisy tails. Voiced frames are pooled
+ * across every channel (not just the loudest), so a quiet-but-pitched channel
+ * is still heard next to a louder unpitched one.
  */
 export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): SamplePitchEstimate | null {
   const first = pcm.channels[0];
   if (first === undefined || first.length === 0) {
     return null;
   }
-  const channel = loudestChannel(pcm.channels);
   const minProbability = options.minProbability ?? DEFAULT_MIN_PROBABILITY;
   const maxScanFrames = options.maxScanFrames ?? DEFAULT_MAX_SCAN_FRAMES;
-  const frameSize = Math.min(channel.length, frameSizeFor(pcm.sampleRate, EDITABLE_FLOOR_HZ));
-  // Widen the hop on long clips so the loop scans fewer frames, but never beyond
-  // one frame: a hop larger than the window would leave unscanned gaps that skip
-  // short notes. Coverage stays gap-free; work is bounded by capping the scanned
-  // span (below) instead, even when the audio is entirely silent or unpitched.
-  const span = channel.length - frameSize;
-  const hop = Math.min(frameSize, Math.max(1, frameSize >> 2, Math.ceil(span / maxScanFrames)));
-  const scanEnd = Math.min(channel.length, frameSize + hop * (maxScanFrames - 1));
+  const frameSize = Math.min(first.length, frameSizeFor(pcm.sampleRate, EDITABLE_FLOOR_HZ));
+  // Keep the hop within one frame so windows stay contiguous (no gaps that skip
+  // short notes), and split the frame budget across channels so total work stays
+  // bounded regardless of channel count, even for silent or unpitched clips.
+  const hop = Math.max(1, frameSize >> 2);
+  const frameBudget = Math.max(1, Math.floor(maxScanFrames / pcm.channels.length));
+  const scanLen = frameSize + hop * (frameBudget - 1);
 
   const midis: number[] = [];
   const probabilities: number[] = [];
-  for (let start = 0; start + frameSize <= scanEnd; start += hop) {
-    const frame = channel.subarray(start, start + frameSize);
-    const estimate = detectPitchYin(frame, pcm.sampleRate, options);
-    if (estimate === null || estimate.probability < minProbability) {
+  for (const channel of pcm.channels) {
+    if (channel.length < frameSize) {
       continue;
     }
-    midis.push(frequencyToMidi(estimate.frequencyHz));
-    probabilities.push(estimate.probability);
+    const scanStart = channel.length <= scanLen ? 0 : highestEnergyWindowStart(channel, hop, scanLen);
+    const scanEnd = Math.min(channel.length, scanStart + scanLen);
+    for (let start = scanStart; start + frameSize <= scanEnd; start += hop) {
+      const frame = channel.subarray(start, start + frameSize);
+      const estimate = detectPitchYin(frame, pcm.sampleRate, options);
+      if (estimate === null || estimate.probability < minProbability) {
+        continue;
+      }
+      midis.push(frequencyToMidi(estimate.frequencyHz));
+      probabilities.push(estimate.probability);
+    }
   }
   if (midis.length === 0) {
     return null;

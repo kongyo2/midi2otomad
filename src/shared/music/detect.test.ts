@@ -240,6 +240,18 @@ describe("detectSamplePitch", () => {
     expect(est!.basePitch).toBe(69);
   });
 
+  it("finds pitched material late in a long clip instead of only scanning the start", () => {
+    const sampleRate = 44100;
+    const frames = 60 * sampleRate;
+    const channel = new Float32Array(frames);
+    // A clear 1s note at 45s — well past the bounded scan's first ~24s prefix —
+    // after a long silent intro; the analyzed window must follow the energy.
+    channel.set(sine(440, sampleRate, sampleRate), 45 * sampleRate);
+    const est = detectSamplePitch({ sampleRate, channels: [channel], frames });
+    expect(est).not.toBeNull();
+    expect(est!.basePitch).toBe(69);
+  });
+
   it("analyzes the loudest channel so a right-panned (left-silent) stereo tone is detected", () => {
     const sampleRate = 44100;
     const frames = sampleRate;
@@ -255,6 +267,18 @@ describe("detectSamplePitch", () => {
     const left = sine(440, sampleRate, frames);
     const right = left.map((v) => -v);
     const est = detectSamplePitch({ sampleRate, channels: [left, right], frames });
+    expect(est!.basePitch).toBe(69);
+  });
+
+  it("detects a quiet pitched channel even when a louder channel is unpitched", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    // Louder channel is a DC offset (high energy, no pitch); the audible note is
+    // the quieter channel. Picking only the loudest channel would miss it.
+    const loudDc = new Float32Array(frames).fill(0.9);
+    const quietTone = sine(440, sampleRate, frames, 0.25);
+    const est = detectSamplePitch({ sampleRate, channels: [loudDc, quietTone], frames });
+    expect(est).not.toBeNull();
     expect(est!.basePitch).toBe(69);
   });
 
