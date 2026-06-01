@@ -23,13 +23,19 @@ export interface SamplePitchEstimate {
 
 export interface DetectOptions extends YinOptions {
   minProbability?: number;
+  /** Stop after this many voiced frames so long clips don't block the caller. */
+  maxVoicedFrames?: number;
 }
 
 const DEFAULT_THRESHOLD = 0.1;
-const DEFAULT_MIN_FREQUENCY = 55;
-const DEFAULT_MAX_FREQUENCY = 2093;
+// Detect across the same MIDI range the sample inspector lets users edit (24–96).
+const DETECTABLE_MIDI_LOW = 24;
+const DETECTABLE_MIDI_HIGH = 96;
+const DEFAULT_MIN_FREQUENCY = midiToFrequency(DETECTABLE_MIDI_LOW);
+const DEFAULT_MAX_FREQUENCY = midiToFrequency(DETECTABLE_MIDI_HIGH);
 const ENERGY_FLOOR = 1e-9;
 const DEFAULT_MIN_PROBABILITY = 0.8;
+const DEFAULT_MAX_VOICED_FRAMES = 256;
 const MIDI_MIN = 0;
 const MIDI_MAX = 127;
 
@@ -112,6 +118,11 @@ export function detectPitchYin(
 
   const cmndf = cumulativeMeanNormalizedDifference(frame, tauMax);
   const tau = pickTau(cmndf, threshold, tauMin, searchEnd);
+  if (!Number.isFinite(cmndf[tau]!)) {
+    // A constant/DC frame yields an all-zero difference function, normalizing to
+    // NaN; treat it as unpitched rather than leaking NaN into the estimate.
+    return null;
+  }
   const refinedTau = parabolicRefine(cmndf, tau);
   const frequencyHz = sampleRate / refinedTau;
   const probability = Math.max(0, Math.min(1, 1 - cmndf[tau]!));
@@ -129,6 +140,19 @@ function median(values: number[]): number {
   return sorted[sorted.length >> 1]!;
 }
 
+function toMono(channels: Float32Array[], frames: number): Float32Array {
+  if (channels.length === 1) {
+    return channels[0]!;
+  }
+  const mono = new Float32Array(frames);
+  for (const channel of channels) {
+    for (let i = 0; i < frames; i += 1) {
+      mono[i]! += channel[i]! / channels.length;
+    }
+  }
+  return mono;
+}
+
 /**
  * Estimate the recorded pitch of a decoded sample by running YIN across
  * overlapping frames and aggregating the voiced ones. The central pitch is the
@@ -137,12 +161,14 @@ function median(values: number[]): number {
  * attack transients, octave jumps, and noisy tails.
  */
 export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): SamplePitchEstimate | null {
-  const channel = pcm.channels[0];
-  if (channel === undefined || channel.length === 0) {
+  const first = pcm.channels[0];
+  if (first === undefined || first.length === 0) {
     return null;
   }
+  const channel = toMono(pcm.channels, first.length);
   const minFrequency = options.minFrequency ?? DEFAULT_MIN_FREQUENCY;
   const minProbability = options.minProbability ?? DEFAULT_MIN_PROBABILITY;
+  const maxVoicedFrames = options.maxVoicedFrames ?? DEFAULT_MAX_VOICED_FRAMES;
   const frameSize = Math.min(channel.length, frameSizeFor(pcm.sampleRate, minFrequency));
   const hop = Math.max(1, frameSize >> 2);
 
@@ -156,6 +182,9 @@ export function detectSamplePitch(pcm: PcmAudio, options: DetectOptions = {}): S
     }
     midis.push(frequencyToMidi(estimate.frequencyHz));
     probabilities.push(estimate.probability);
+    if (midis.length >= maxVoicedFrames) {
+      break;
+    }
   }
   if (midis.length === 0) {
     return null;

@@ -88,6 +88,11 @@ describe("detectPitchYin", () => {
     expect(est!.frequencyHz).toBeGreaterThan(1150);
     expect(est!.frequencyHz).toBeLessThan(1250);
   });
+
+  it("returns null for a constant (DC) frame with no periodicity", () => {
+    const frame = new Float32Array(2048).fill(0.5);
+    expect(detectPitchYin(frame, 44100)).toBeNull();
+  });
 });
 
 describe("detectSamplePitch", () => {
@@ -144,8 +149,42 @@ describe("detectSamplePitch", () => {
     const frames = sampleRate;
     const channel = sine(440, sampleRate, frames);
     const glitchStart = Math.floor(0.4 * sampleRate);
-    channel.set(sine(880, sampleRate, Math.floor(0.1 * sampleRate)), glitchStart);
+    channel.set(sine(880, sampleRate, Math.floor(0.15 * sampleRate)), glitchStart);
     const est = detectSamplePitch({ sampleRate, channels: [channel], frames });
     expect(est!.basePitch).toBe(69);
+  });
+
+  it("detects a low bass tone in the editable range, below the old 55 Hz floor", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    // 49 Hz is G1 (MIDI 31); the inspector allows base pitches down to MIDI 24.
+    const pcm: PcmAudio = { sampleRate, channels: [sine(49, sampleRate, frames)], frames };
+    const est = detectSamplePitch(pcm);
+    expect(est!.basePitch).toBe(31);
+  });
+
+  it("caps the number of analyzed voiced frames to bound work on long samples", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    const pcm: PcmAudio = { sampleRate, channels: [sine(440, sampleRate, frames)], frames };
+    const est = detectSamplePitch(pcm, { maxVoicedFrames: 4 });
+    expect(est!.voicedFrames).toBe(4);
+    expect(est!.basePitch).toBe(69);
+  });
+
+  it("mixes channels so a right-panned (left-silent) stereo tone is detected", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    const left = new Float32Array(frames);
+    const right = sine(440, sampleRate, frames);
+    const est = detectSamplePitch({ sampleRate, channels: [left, right], frames });
+    expect(est!.basePitch).toBe(69);
+  });
+
+  it("returns null for a constant (DC) sample instead of emitting NaN", () => {
+    const sampleRate = 44100;
+    const frames = sampleRate;
+    const pcm: PcmAudio = { sampleRate, channels: [new Float32Array(frames).fill(0.5)], frames };
+    expect(detectSamplePitch(pcm)).toBeNull();
   });
 });
