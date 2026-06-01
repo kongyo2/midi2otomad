@@ -19,7 +19,7 @@ export function LevelMeter(): React.JSX.Element {
         analyser.getFloatTimeDomainData(buffer);
         let sum = 0;
         for (let i = 0; i < buffer.length; i += 1) {
-          const v = buffer[i] ?? 0;
+          const v = buffer[i]!;
           sum += v * v;
         }
         const rms = Math.sqrt(sum / buffer.length);

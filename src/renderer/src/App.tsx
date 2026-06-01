@@ -14,9 +14,8 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      const target = event.target as HTMLElement | null;
-      const tag = target?.tagName ?? "";
-      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {
+      const target = event.target;
+      if (target instanceof HTMLElement && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) {
         return;
       }
       if (event.code === "Space") {

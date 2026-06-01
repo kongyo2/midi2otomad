@@ -6,5 +6,6 @@
     "lib": ["esnext"],
     "types": ["node", "electron-vite/node"]
   },
-  "include": ["electron.vite.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"]
+  "include": ["electron.vite.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

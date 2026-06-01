@@ -14,7 +14,7 @@ export function pitchRatio(notePitch: number, basePitch: number, tuneCents = 0):
 
 export function midiToNoteName(midi: number): string {
   const clamped = Math.max(0, Math.min(127, Math.round(midi)));
-  const name = NOTE_NAMES[clamped % 12] ?? "C";
+  const name = NOTE_NAMES[clamped % 12]!;
   const octave = Math.floor(clamped / 12) - 1;
   return `${name}${octave}`;
 }
@@ -24,14 +24,16 @@ export function noteNameToMidi(name: string): number | null {
   if (match === null) {
     return null;
   }
-  const [, letter, accidental, octaveRaw] = match;
+  const letter = match[1]!.toLowerCase();
+  const accidental = match[2];
+  const octaveRaw = match[3]!;
   const base: Record<string, number> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
-  let semitone = base[(letter ?? "c").toLowerCase()] ?? 0;
+  let semitone = base[letter]!;
   if (accidental === "#") {
     semitone += 1;
   } else if (accidental === "b") {
     semitone -= 1;
   }
-  const octave = Number.parseInt(octaveRaw ?? "0", 10);
+  const octave = Number.parseInt(octaveRaw, 10);
   return (octave + 1) * 12 + semitone;
 }

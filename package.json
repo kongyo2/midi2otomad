@@ -21,7 +21,9 @@
     "format:check": "prettier --check .",
     "package": "electron-vite build && electron-builder",
     "package:dir": "electron-vite build && electron-builder --dir",
-    "selftest": "esbuild scripts/selftest.ts --bundle --platform=node --format=esm --external:node-av --outfile=tmp/selftest.mjs --log-level=warning && node tmp/selftest.mjs"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@tonejs/midi": "^2.0.28",
@@ -33,17 +35,24 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.2.0",
+    "@vitest/coverage-v8": "^4.1.8",
     "electron": "^42.3.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "jsdom": "^29.1.1",
     "oxlint": "^1.67.0",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
-    "vite": "^7.3.3"
+    "vite": "^7.3.3",
+    "vitest": "^4.1.8"
   },
   "overrides": {
     "werift": {

@@ -41,32 +41,22 @@ export function velocityToGain(velocity: number): number {
 }
 
 function sampleAutomation(points: AutomationPoint[], t: number): number {
-  if (points.length === 0) {
-    return 1;
-  }
   const first = points[0];
   if (first === undefined || t < first.t) {
     // Before the first explicit controller event the value defaults to full,
     // rather than projecting the first (possibly low) event backward over the intro.
     return 1;
   }
-  const last = points[points.length - 1];
-  if (last !== undefined && t >= last.t) {
-    return last.v;
-  }
+  let prev = first;
   for (let i = 1; i < points.length; i += 1) {
-    const a = points[i - 1];
-    const b = points[i];
-    if (a !== undefined && b !== undefined && t < b.t) {
-      const span = b.t - a.t;
-      if (span <= 0) {
-        return b.v;
-      }
-      const k = (t - a.t) / span;
-      return a.v + (b.v - a.v) * k;
+    const next = points[i]!;
+    if (t < next.t) {
+      const span = next.t - prev.t;
+      return prev.v + (next.v - prev.v) * ((t - prev.t) / span);
     }
+    prev = next;
   }
-  return last?.v ?? 1;
+  return prev.v;
 }
 
 /** Resolve the effective loop region in source-sample units. */
@@ -87,12 +77,12 @@ function resolveLoop(sample: Sample, src: PcmAudio): { start: number; end: numbe
 function readInterpolated(channel: Float32Array, pos: number, wrap: { start: number; length: number } | null): number {
   const i0 = Math.floor(pos);
   const frac = pos - i0;
-  let a = channel[i0] ?? 0;
+  let a = channel[i0]!;
   let nextIndex = i0 + 1;
   if (wrap !== null && nextIndex >= wrap.start + wrap.length) {
     nextIndex = wrap.start + ((nextIndex - wrap.start) % wrap.length);
   }
-  let b = channel[nextIndex] ?? 0;
+  let b = channel[nextIndex]!;
   if (!Number.isFinite(a)) {
     a = 0;
   }
@@ -130,8 +120,7 @@ function projectEndSeconds(project: Project, sampleById: Map<string, Sample>): n
   for (const track of project.tracks) {
     for (const note of track.notes) {
       const sampleId = track.noteSampleMap[String(note.pitch)] ?? track.defaultSampleId;
-      const release =
-        sampleId !== null && sampleId !== undefined ? (sampleById.get(sampleId)?.envelope.releaseMs ?? 0) : 0;
+      const release = sampleId !== null ? (sampleById.get(sampleId)?.envelope.releaseMs ?? 0) : 0;
       const tail = note.startSec + note.durationSec + release / 1000;
       if (tail > end) {
         end = tail;
@@ -211,12 +200,12 @@ function renderNote(
     }
 
     if (alive && env > 0) {
-      const dyn = trackDyn === null ? 1 : (trackDyn[outIdx] ?? 1);
+      const dyn = trackDyn === null ? 1 : trackDyn[outIdx]!;
       const amp = env * staticGain * dyn;
       const sL = readInterpolated(ch0, pos, wrap) * amp;
       const sR = readInterpolated(ch1, pos, wrap) * amp;
-      left[outIdx] = (left[outIdx] ?? 0) + sL * pan.left;
-      right[outIdx] = (right[outIdx] ?? 0) + sR * pan.right;
+      left[outIdx] = left[outIdx]! + sL * pan.left;
+      right[outIdx] = right[outIdx]! + sR * pan.right;
     }
 
     srcPos += increment;
@@ -244,7 +233,7 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
     const trackDyn = buildTrackDynamics(track, frames, outRate);
     for (const note of track.notes) {
       const sampleId = track.noteSampleMap[String(note.pitch)] ?? track.defaultSampleId;
-      if (sampleId === null || sampleId === undefined) {
+      if (sampleId === null) {
         continue;
       }
       const sample = sampleById.get(sampleId);
@@ -258,8 +247,8 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
 
   let peak = 0;
   for (let i = 0; i < frames; i += 1) {
-    const l = left[i] ?? 0;
-    const r = right[i] ?? 0;
+    const l = left[i]!;
+    const r = right[i]!;
     const m = Math.max(Math.abs(l), Math.abs(r));
     if (m > peak) {
       peak = m;
@@ -268,8 +257,8 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
 
   if (options.limiter !== false) {
     for (let i = 0; i < frames; i += 1) {
-      left[i] = softClip(left[i] ?? 0);
-      right[i] = softClip(right[i] ?? 0);
+      left[i] = softClip(left[i]!);
+      right[i] = softClip(right[i]!);
     }
   }
 

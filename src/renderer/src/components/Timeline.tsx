@@ -33,10 +33,10 @@ export function Timeline(): React.JSX.Element {
   const playheadX = HEADER_WIDTH + playhead * pxPerSec;
 
   useEffect(() => {
-    const scroller = scrollRef.current;
-    if (scroller === null || !isPlaying) {
+    if (!isPlaying) {
       return;
     }
+    const scroller = scrollRef.current!;
     const viewLeft = scroller.scrollLeft;
     const viewRight = viewLeft + scroller.clientWidth;
     if (playheadX < viewLeft + HEADER_WIDTH || playheadX > viewRight - 80) {
