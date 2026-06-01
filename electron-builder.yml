@@ -1,5 +1,10 @@
 appId: com.kongyo2.midi2otomad
 productName: midi2otomad
+publish:
+  provider: github
+  owner: kongyo2
+  repo: midi2otomad
+  releaseType: release
 directories:
   buildResources: build
   output: release

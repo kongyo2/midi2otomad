@@ -11,6 +11,8 @@ jobs:
   build:
     name: Build Windows installer
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,7 +27,9 @@ jobs:
         run: npm ci
 
       - name: Build and package Windows installer
-        run: npm run package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run package -- --publish always
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
