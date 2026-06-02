@@ -158,21 +158,6 @@ function trackRenders(track: Track, solo: boolean): boolean {
   return !track.muted && (!solo || track.solo);
 }
 
-function projectEndSeconds(project: Project, sampleById: Map<string, Sample>): number {
-  let end = 0;
-  for (const track of project.tracks) {
-    for (const note of track.notes) {
-      const sampleId = track.noteSampleMap[String(note.pitch)] ?? track.defaultSampleId;
-      const release = sampleId !== null ? (sampleById.get(sampleId)?.envelope.releaseMs ?? 0) : 0;
-      const tail = note.startSec + note.durationSec + release / 1000;
-      if (tail > end) {
-        end = tail;
-      }
-    }
-  }
-  return end;
-}
-
 function buildTrackDynamics(track: Track, frames: number, sampleRate: number): Float32Array | null {
   const { volume, expression } = track.dynamics;
   if (volume.length === 0 && expression.length === 0) {
@@ -214,6 +199,7 @@ function renderNote(
   outRate: number,
   masterGain: number,
   pan: { left: number; right: number },
+  cutSec: number | null,
 ): void {
   const total = buses.left.length;
   const baseRatio = pitchRatio(note.pitch, sample.basePitch, sample.tuneCents);
@@ -223,6 +209,9 @@ function renderNote(
   const releaseFrames = Math.max(0, Math.round((sample.envelope.releaseMs / 1000) * outRate));
   const voiceFrames = noteFrames + releaseFrames;
   const gateSec = note.durationSec;
+
+  const chokeSec = CHOKE_RELEASE_MS / 1000;
+  const cutEndSec = cutSec === null ? Number.POSITIVE_INFINITY : cutSec + chokeSec;
 
   const velGain = velocityToGain(note.velocity);
   const staticGain = velGain * sample.gain * track.gain * masterGain;
@@ -251,6 +240,9 @@ function renderNote(
   for (let i = 0; i < voiceFrames; i += 1) {
     const outIdx = startFrame + i;
     const tSec = i / outRate;
+    if (tSec >= cutEndSec) {
+      break;
+    }
     const increment = baseIncrement * semitonesToRatio(pitchOffsetSemitones(sample.pitchMod, tSec));
     if (outIdx < 0) {
       srcPos += increment;
@@ -286,8 +278,9 @@ function renderNote(
         sR = processBiquadSample(coeffs, stateR, sR);
       }
       if (env > 0) {
+        const cutGain = cutSec === null || tSec <= cutSec ? 1 : 1 - (tSec - cutSec) / chokeSec;
         const dyn = trackDyn === null ? 1 : trackDyn[outIdx]!;
-        const amp = env * staticGain * dyn;
+        const amp = env * staticGain * dyn * cutGain;
         const outL = sL * amp * pan.left;
         const outR = sR * amp * pan.right;
         buses.left[outIdx] = buses.left[outIdx]! + outL;
@@ -304,20 +297,20 @@ function renderNote(
 }
 
 /**
- * How long a voice actually produces sound, for voice-allocation bookkeeping. A
- * live loop sustains for the whole MIDI note, but a non-looping one-shot goes
- * silent once playback runs off the end of the source — so its slot should free
- * then, rather than being held (and stealing/blocking later notes) for the full
- * note. Playback speed is approximated by the base pitch ratio, ignoring glide
- * and vibrato.
+ * How long a voice keeps a slot occupied, for voice-allocation bookkeeping: the
+ * note's gate plus its release tail, so the cap counts a still-ringing release
+ * as a live voice. A non-looping one-shot is bounded by its playback length,
+ * since it goes silent once playback runs off the end of the source. Playback
+ * speed is approximated by the base pitch ratio, ignoring glide and vibrato.
  */
-function audibleDurationSec(note: Note, sample: Sample, src: PcmAudio): number {
+function soundingDurationSec(note: Note, sample: Sample, src: PcmAudio): number {
+  const gatePlusRelease = note.durationSec + sample.envelope.releaseMs / 1000;
   if (resolveLoop(sample, src) !== null) {
-    return note.durationSec;
+    return gatePlusRelease;
   }
   const ratio = pitchRatio(note.pitch, sample.basePitch, sample.tuneCents);
   const oneShotSec = src.frames / src.sampleRate / ratio;
-  return Math.min(note.durationSec, oneShotSec);
+  return Math.min(gatePlusRelease, oneShotSec);
 }
 
 /** Resolve a note to its sample and decoded audio, or null when nothing renders. */
@@ -339,22 +332,52 @@ function resolveNoteSource(
   return { sample, src };
 }
 
+/** A note that survived voice allocation, with the cut time when it was stolen/choked (else null). */
+interface PlannedVoice {
+  note: Note;
+  sample: Sample;
+  src: PcmAudio;
+  cutSec: number | null;
+  endSec: number;
+}
+
+interface TrackPlan {
+  track: Track;
+  voices: PlannedVoice[];
+}
+
+/** Resolve and voice-allocate a track's notes into the voices that will actually render. */
+function planTrackVoices(track: Track, sampleById: Map<string, Sample>, bank: AudioBank): PlannedVoice[] {
+  const resolved = track.notes
+    .map((note) => ({ note, source: resolveNoteSource(track, note, sampleById, bank) }))
+    .filter((entry): entry is { note: Note; source: { sample: Sample; src: PcmAudio } } => entry.source !== null);
+  const requests = resolved.map(({ note, source }) => ({
+    pitch: note.pitch,
+    startSec: note.startSec,
+    durationSec: soundingDurationSec(note, source.sample, source.src),
+    sampleId: source.sample.id,
+  }));
+  return allocateVoices(requests, track.polyphony).map(({ index, durationSec }) => {
+    const { note, source } = resolved[index]!;
+    const cutSec = durationSec < requests[index]!.durationSec ? durationSec : null;
+    const endSec =
+      cutSec === null
+        ? note.startSec + note.durationSec + source.sample.envelope.releaseMs / 1000
+        : note.startSec + cutSec + CHOKE_RELEASE_MS / 1000;
+    return { note, sample: source.sample, src: source.src, cutSec, endSec };
+  });
+}
+
 /**
  * The reverb only contributes sound when it is enabled, wet, and fed by a track that renders and
- * carries at least one note that resolves to decoded audio — without a real send the tail is silent,
- * so reserving its decay would only pad the buffer with silence.
+ * carries at least one surviving voice — without a real send the tail is silent, so reserving its
+ * decay would only pad the buffer with silence.
  */
-function reverbAudible(project: Project, sampleById: Map<string, Sample>, bank: AudioBank): boolean {
+function reverbAudible(project: Project, plans: TrackPlan[]): boolean {
   if (!project.reverb.enabled || project.reverb.wet <= 0) {
     return false;
   }
-  const solo = anySolo(project.tracks);
-  return project.tracks.some(
-    (t) =>
-      trackRenders(t, solo) &&
-      t.reverbSend > 0 &&
-      t.notes.some((n) => resolveNoteSource(t, n, sampleById, bank) !== null),
-  );
+  return plans.some(({ track, voices }) => track.reverbSend > 0 && voices.length > 0);
 }
 
 function reverbTailSeconds(project: Project): number {
@@ -383,8 +406,22 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
   const outRate = project.sampleRate;
   const sampleById = new Map<string, Sample>(project.samples.map((s) => [s.id, s]));
   const tailSec = options.tailSec ?? 0.25;
-  const audible = reverbAudible(project, sampleById, bank);
-  const end = projectEndSeconds(project, sampleById) + tailSec + (audible ? reverbTailSeconds(project) : 0);
+  const solo = anySolo(project.tracks);
+  const plans: TrackPlan[] = project.tracks
+    .filter((track) => trackRenders(track, solo))
+    .map((track) => ({ track, voices: planTrackVoices(track, sampleById, bank) }));
+
+  let lastEnd = 0;
+  for (const { voices } of plans) {
+    for (const voice of voices) {
+      if (voice.endSec > lastEnd) {
+        lastEnd = voice.endSec;
+      }
+    }
+  }
+
+  const audible = reverbAudible(project, plans);
+  const end = lastEnd + tailSec + (audible ? reverbTailSeconds(project) : 0);
   const frames = Math.max(MIN_FRAMES, Math.ceil(end * outRate) + 1);
 
   const left = new Float32Array(frames);
@@ -392,34 +429,13 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
   const send: SendBus | null = audible ? { l: new Float32Array(frames), r: new Float32Array(frames) } : null;
   const buses: Buses = { left, right, send };
 
-  const solo = anySolo(project.tracks);
   const masterGain = project.masterGain;
 
-  for (const track of project.tracks) {
-    if (!trackRenders(track, solo)) {
-      continue;
-    }
+  for (const { track, voices } of plans) {
     const pan = panGains(track.pan);
     const trackDyn = buildTrackDynamics(track, frames, outRate);
-    const voices = track.notes
-      .map((note) => ({ note, resolved: resolveNoteSource(track, note, sampleById, bank) }))
-      .filter((voice): voice is { note: Note; resolved: { sample: Sample; src: PcmAudio } } => voice.resolved !== null);
-    const requests = voices.map(({ note, resolved }) => ({
-      pitch: note.pitch,
-      startSec: note.startSec,
-      durationSec: audibleDurationSec(note, resolved.sample, resolved.src),
-      sampleId: resolved.sample.id,
-    }));
-    const allocations = allocateVoices(requests, track.polyphony);
-    for (const { index, durationSec } of allocations) {
-      const { note, resolved } = voices[index]!;
-      if (durationSec < requests[index]!.durationSec) {
-        const gated = { ...note, durationSec };
-        const choked = { ...resolved.sample, envelope: { ...resolved.sample.envelope, releaseMs: CHOKE_RELEASE_MS } };
-        renderNote(gated, choked, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
-      } else {
-        renderNote(note, resolved.sample, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
-      }
+    for (const voice of voices) {
+      renderNote(voice.note, voice.sample, voice.src, track, trackDyn, buses, outRate, masterGain, pan, voice.cutSec);
     }
   }
 

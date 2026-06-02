@@ -836,6 +836,47 @@ describe("mixProject polyphony", () => {
     });
     expect(mix.left[1100]!).toBeCloseTo(1, 5);
   });
+
+  it("counts a release tail toward the cap, choking it when a new note arrives", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({ id: "rel", envelope: { attackMs: 0, releaseMs: 500 } }),
+        sampleRaw({ id: "dry", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "rel",
+          noteSampleMap: { "64": "dry" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 0.1, velocity: 127 },
+            { pitch: 64, startSec: 0.3, durationSec: 0.1, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "newest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ rel: constSource(1, 3000), dry: constSource(1, 3000) }), {
+      limiter: false,
+    });
+    expect(mix.left[500]).toBe(0);
+  });
+
+  it("sizes the render from surviving voices, not dropped ones", () => {
+    const project = makeProject({
+      samples: [sampleRaw()],
+      tracks: [
+        trackRaw({
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 5, velocity: 127 },
+            { pitch: 64, startSec: 0, durationSec: 0.1, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "newest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 6000) }), { limiter: false });
+    expect(mix.frames).toBeLessThan(1000);
+  });
 });
 
 describe("mixProject buffer bounds", () => {
