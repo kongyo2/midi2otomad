@@ -14,5 +14,6 @@ pub mod resample;
 pub mod reverb;
 
 pub use mixer::{
-    mix_project, velocity_to_gain, AudioBank, MapBank, MixOptions, MixResult, PcmAudio,
+    build_waveform_peaks, mix_project, velocity_to_gain, AudioBank, MapBank, MixOptions, MixResult,
+    PcmAudio,
 };
