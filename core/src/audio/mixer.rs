@@ -1568,6 +1568,180 @@ mod tests {
     }
 
     #[test]
+    fn waveform_peaks_capture_bucket_maxima() {
+        let pcm = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![vec![0.1, 0.9, -0.5, 0.3]],
+            frames: 4,
+        };
+        let peaks = build_waveform_peaks(&pcm, 2);
+        assert_eq!(peaks.len(), 2);
+        assert!(close(peaks[0] as f64, 0.9, 6));
+        assert!(close(peaks[1] as f64, 0.5, 6));
+    }
+
+    #[test]
+    fn waveform_peaks_handle_empty_and_oversampled() {
+        let empty = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![],
+            frames: 0,
+        };
+        assert_eq!(build_waveform_peaks(&empty, 8), vec![0.0f32; 8]);
+
+        let silent = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![vec![]],
+            frames: 0,
+        };
+        assert_eq!(build_waveform_peaks(&silent, 4), vec![0.0f32; 4]);
+
+        // バケット数がフレーム数より多くても落ちない。
+        let pcm = const_source(0.7, 3);
+        let peaks = build_waveform_peaks(&pcm, 16);
+        assert_eq!(peaks.len(), 16);
+        assert!(peaks.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn pcm_duration_seconds() {
+        assert!(close(const_source(1.0, 480).duration_sec(), 0.48, 9));
+        let zero_rate = PcmAudio {
+            sample_rate: 0.0,
+            channels: vec![vec![0.0; 10]],
+            frames: 10,
+        };
+        assert_eq!(zero_rate.duration_sec(), 0.0);
+    }
+
+    #[test]
+    fn map_bank_wraps_hashmap() {
+        let bank = MapBank(bank1("s1", const_source(1.0, 4)));
+        assert!(AudioBank::get(&bank, "s1").is_some());
+        assert!(AudioBank::get(&bank, "nope").is_none());
+
+        let project = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([track_raw(json!({}))]),
+        );
+        let m = mix_project(&project, &bank, &limiter_off());
+        assert!(m.peak > 0.0);
+    }
+
+    #[test]
+    fn master_gain_scales_output() {
+        let make = |gain: f64| {
+            parse_project(json!({
+                "version": 1, "name": "g", "sampleRate": 1000, "masterGain": gain,
+                "samples": [sample_raw(json!({}))], "tracks": [track_raw(json!({}))]
+            }))
+            .unwrap()
+        };
+        let full = mix(
+            &make(1.0),
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        let half = mix(
+            &make(0.5),
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        assert!(close(full.left[100] as f64, 1.0, 5));
+        assert!(close(half.left[100] as f64, 0.5, 5));
+    }
+
+    #[test]
+    fn multiple_tracks_sum() {
+        let project = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([
+                track_raw(json!({ "id": "a", "pan": 0 })),
+                track_raw(json!({ "id": "b", "pan": 0 }))
+            ]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", const_source(0.4, 1000)),
+            limiter_off(),
+        );
+        // 2 トラックが同じ素材を重ねるので約 0.8。
+        assert!(close(m.left[100] as f64, 0.8, 4));
+    }
+
+    #[test]
+    fn peak_is_measured_before_limiter() {
+        // 3 音を重ねるとサム 3.0。peak は素の値、出力はソフトクリップ後。
+        let chord = json!([
+            { "pitch": 60, "startSec": 0, "durationSec": 1, "velocity": 127 },
+            { "pitch": 60, "startSec": 0, "durationSec": 1, "velocity": 127 },
+            { "pitch": 60, "startSec": 0, "durationSec": 1, "velocity": 127 }
+        ]);
+        let project = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([track_raw(
+                json!({ "notes": chord, "polyphony": { "maxVoices": 0 } })
+            )]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", const_source(1.0, 1000)),
+            MixOptions {
+                tail_sec: None,
+                limiter: Some(true),
+            },
+        );
+        assert!(m.peak > 2.9); // 素のサム ≈ 3.0
+        assert!(max_abs(&m.left) <= 1.0); // ソフトクリップの天井は 1.0
+        assert!((m.peak as f32) > max_abs(&m.left) * 2.5); // peak はリミッター前の値
+    }
+
+    #[test]
+    fn source_rate_differs_from_project_rate() {
+        // 2000Hz 録音を 1000Hz プロジェクトで base_pitch==pitch で再生。
+        // 増分は src/out=2 となり、ソースを 2 倍速で読む（=録音時の自然な音程）。
+        let ch: Vec<f32> = (0..2000)
+            .map(|i| ((i as f64) * 0.05).sin() as f32 * 0.5)
+            .collect();
+        let src = PcmAudio {
+            sample_rate: 2000.0,
+            channels: vec![ch],
+            frames: 2000,
+        };
+        let project = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([track_raw(json!({}))]),
+        );
+        let m = mix(&project, &bank1("s1", src), limiter_off());
+        assert!(m.peak > 0.0);
+        assert!(all_finite(&m.left));
+    }
+
+    #[test]
+    fn velocity_scales_amplitude() {
+        let make = |vel: i32| {
+            make_project(
+                json!([sample_raw(json!({}))]),
+                json!([track_raw(json!({
+                    "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": vel }]
+                }))]),
+            )
+        };
+        let loud = mix(
+            &make(127),
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        let soft = mix(
+            &make(64),
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        assert!(loud.left[50].abs() > soft.left[50].abs());
+        assert!(close(soft.left[50] as f64, velocity_to_gain(64.0), 4));
+    }
+
+    #[test]
     fn buffer_bounds() {
         let mut project = make_project(
             json!([sample_raw(json!({}))]),

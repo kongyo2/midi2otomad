@@ -311,4 +311,74 @@ mod tests {
             .collect();
         assert_eq!(process_biquad(&coeffs, &input), expected);
     }
+
+    #[test]
+    fn butterworth_is_minus_3db_at_cutoff() {
+        // Q = 1/√2 のローパスはカットオフで振幅 1/√2（-3dB）。
+        let mag = mag_at(
+            FilterType::Lowpass,
+            1000.0,
+            std::f64::consts::FRAC_1_SQRT_2,
+            0.0,
+        );
+        assert!(close(mag, std::f64::consts::FRAC_1_SQRT_2, 3));
+    }
+
+    #[test]
+    fn bandpass_is_unity_at_center() {
+        // 0 dB ピークゲイン版バンドパスは中心周波数で振幅 1。
+        assert!(close(
+            mag_at(FilterType::Bandpass, 1000.0, 1.0, 0.0),
+            1.0,
+            4
+        ));
+    }
+
+    #[test]
+    fn tiny_q_does_not_produce_nan() {
+        // q は内部で 1e-6 にクランプされるため 0 でも係数は有限。
+        let c = design_biquad(FilterType::Lowpass, 1000.0, FS, 0.0, 0.0);
+        for v in [c.b0, c.b1, c.b2, c.a1, c.a2] {
+            assert!(v.is_finite());
+        }
+    }
+
+    #[test]
+    fn process_empty_input_is_empty() {
+        let c = design_biquad(FilterType::Lowpass, 1000.0, FS, 0.707, 0.0);
+        assert!(process_biquad(&c, &[]).is_empty());
+    }
+
+    #[test]
+    fn extreme_gains_stay_finite() {
+        for gain in [-24.0, -12.0, 12.0, 24.0] {
+            for kind in [
+                FilterType::Peaking,
+                FilterType::Lowshelf,
+                FilterType::Highshelf,
+            ] {
+                let c = design_biquad(kind, 1000.0, FS, 1.0, gain);
+                for v in [c.b0, c.b1, c.b2, c.a1, c.a2] {
+                    assert!(v.is_finite());
+                }
+                assert!(magnitude_response(&c, 1000.0, FS).is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn higher_q_sharpens_peak() {
+        // Q が大きいほどピーキングフィルターの中心ゲインは公称値へ近づく一方、
+        // 隣接周波数では裾が狭くなる。中心ゲインはどちらもブースト。
+        let narrow = mag_at(FilterType::Peaking, 1000.0, 8.0, 12.0);
+        let wide = mag_at(FilterType::Peaking, 1000.0, 1.0, 12.0);
+        let target = 10f64.powf(12.0 / 20.0);
+        assert!(close(narrow, target, 1));
+        assert!(close(wide, target, 1));
+        // 中心から離れた点では狭い Q の方が早く減衰する。
+        assert!(
+            mag_at(FilterType::Peaking, 1600.0, 8.0, 12.0)
+                < mag_at(FilterType::Peaking, 1600.0, 1.0, 12.0)
+        );
+    }
 }

@@ -55,4 +55,32 @@ mod tests {
     fn rings_near_edge() {
         assert!(cubic_hermite(0.0, 0.0, 0.0, 1.0, 0.5) < 0.0);
     }
+
+    #[test]
+    fn reproduces_line_across_many_t() {
+        // 等差数列（直線）は内部のどの t でも直線上に乗る。
+        for i in 0..=10 {
+            let t = i as f64 / 10.0;
+            assert!(close(
+                cubic_hermite(1.0, 3.0, 5.0, 7.0, t),
+                3.0 + 2.0 * t,
+                12
+            ));
+        }
+    }
+
+    #[test]
+    fn symmetric_step_is_midpoint() {
+        // 対称な段差 0,0,1,1 の中央は 0.5。
+        assert!(close(cubic_hermite(0.0, 0.0, 1.0, 1.0, 0.5), 0.5, 12));
+    }
+
+    #[test]
+    fn tangent_matches_central_difference_at_t0() {
+        // t=0 での数値微分が内側点の中央差分接線 (y2-y0)/2 に一致する。
+        let (y0, y1, y2, y3) = (1.0, 2.0, 5.0, 4.0);
+        let h = 1e-6;
+        let slope = (cubic_hermite(y0, y1, y2, y3, h) - y1) / h;
+        assert!(close(slope, (y2 - y0) * 0.5, 4));
+    }
 }

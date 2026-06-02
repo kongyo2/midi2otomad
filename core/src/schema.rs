@@ -863,4 +863,152 @@ mod tests {
         project.validate().unwrap();
         assert_eq!(create_empty_project("My Song").name, "My Song");
     }
+
+    #[test]
+    fn create_sample_has_documented_defaults() {
+        let s = create_sample("abc", "kick");
+        assert_eq!(s.id, "abc");
+        assert_eq!(s.name, "kick");
+        assert_eq!(s.base_pitch, DEFAULT_BASE_PITCH);
+        assert_eq!(s.gain, 1.0);
+        assert_eq!(s.interpolation, InterpolationMode::Hermite);
+        assert!(!s.loop_region.enabled);
+        assert_eq!(s.envelope, Envelope::default());
+        assert_eq!(s.filter, Filter::default());
+        assert_eq!(s.pitch_mod, PitchMod::default());
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn serde_round_trip_preserves_everything() {
+        let project = parse_project(json!({
+            "version": 1, "name": "Full", "bpm": 128, "ppq": 960, "sampleRate": 44100,
+            "masterGain": 0.9,
+            "tempos": [{ "timeSec": 0, "bpm": 128 }, { "timeSec": 4, "bpm": 140 }],
+            "samples": [{
+                "id": "s1", "name": "voice", "fileName": "voice.wav", "basePitch": 62,
+                "tuneCents": -15, "gain": 1.5, "durationSec": 2.5, "interpolation": "linear",
+                "loop": { "enabled": true, "startSec": 0.2, "endSec": 1.8 },
+                "envelope": { "attackMs": 8, "decayMs": 120, "sustain": 0.6, "releaseMs": 200 },
+                "filter": { "enabled": true, "type": "highshelf", "cutoffHz": 5000, "q": 1.2, "gainDb": 6 },
+                "pitchMod": { "vibratoCents": 30, "vibratoHz": 6, "vibratoShape": "triangle" }
+            }],
+            "tracks": [{
+                "id": "t1", "name": "Lead", "midiIndex": 3, "color": "#36d399",
+                "muted": false, "solo": true, "gain": 0.8, "pan": -0.3,
+                "defaultSampleId": "s1", "noteSampleMap": { "60": "s1", "64": "s1" },
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 90 }],
+                "dynamics": { "volume": [{ "t": 0, "v": 0.8 }], "expression": [{ "t": 1, "v": 0.5 }] },
+                "reverbSend": 0.4,
+                "polyphony": { "maxVoices": 6, "priority": "highest", "stopMode": "sample" }
+            }],
+            "reverb": { "enabled": true, "roomSize": 0.7, "damping": 0.3, "width": 0.8, "wet": 0.3, "dry": 0.9, "preDelayMs": 25 },
+            "output": { "tailSec": 1.5, "limiter": { "enabled": true, "threshold": 0.9 } }
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(&project).unwrap();
+        let reparsed = parse_project(serialized).unwrap();
+        assert_eq!(project, reparsed);
+    }
+
+    #[test]
+    fn enums_serialize_to_lowercase() {
+        let s = create_sample("s", "n");
+        let v = serde_json::to_value(s).unwrap();
+        assert_eq!(v["interpolation"], "hermite");
+        assert_eq!(v["filter"]["type"], "lowpass");
+        assert_eq!(v["filter"]["lfoShape"], "sine");
+        assert_eq!(v["pitchMod"]["vibratoShape"], "sine");
+    }
+
+    #[test]
+    fn accepts_values_at_range_boundaries() {
+        // 各範囲の下限・上限ちょうどは受理される。
+        assert!(parse_project(json!({
+            "version": 1, "name": "edge",
+            "samples": [{
+                "id": "s", "name": "s", "basePitch": 0, "tuneCents": -2400, "gain": 0,
+                "filter": { "cutoffHz": 20, "q": 0.1, "gainDb": -24, "lfoHz": 0 }
+            }]
+        }))
+        .is_ok());
+        assert!(parse_project(json!({
+            "version": 1, "name": "edge",
+            "samples": [{
+                "id": "s", "name": "s", "basePitch": 127, "tuneCents": 2400, "gain": 4,
+                "filter": { "cutoffHz": 20000, "q": 24, "gainDb": 24, "lfoHz": 16, "lfoDepth": 8 }
+            }]
+        }))
+        .is_ok());
+        assert!(parse_project(json!({
+            "version": 1, "name": "edge",
+            "reverb": { "roomSize": 0, "damping": 0, "width": 0, "wet": 0, "dry": 0, "preDelayMs": 0 },
+            "output": { "tailSec": 0, "limiter": { "threshold": 0.1 } }
+        }))
+        .is_ok());
+        assert!(parse_project(json!({
+            "version": 1, "name": "edge",
+            "reverb": { "roomSize": 1, "damping": 1, "width": 1, "wet": 1, "dry": 1, "preDelayMs": 500 },
+            "output": { "tailSec": 10, "limiter": { "threshold": 1 } }
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_just_past_boundaries() {
+        let cases = vec![
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "basePitch": 128 }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "basePitch": -1 }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "gain": 4.1 }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "tuneCents": 2401 }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "filter": { "cutoffHz": 19 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "filter": { "cutoffHz": 20001 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "filter": { "q": 0.05 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "filter": { "q": 25 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "pitchMod": { "vibratoCents": 1300 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "pitchMod": { "glideSemitones": 49 } }] }),
+            json!({ "version": 1, "name": "x", "reverb": { "roomSize": 1.1 } }),
+            json!({ "version": 1, "name": "x", "reverb": { "preDelayMs": 501 } }),
+            json!({ "version": 1, "name": "x", "masterGain": 4.5 }),
+            json!({ "version": 1, "name": "x", "bpm": 0 }),
+            json!({ "version": 1, "name": "x", "ppq": 0 }),
+            json!({ "version": 1, "name": "x", "sampleRate": 0 }),
+            json!({ "version": 1, "name": "x", "tempos": [{ "timeSec": 0, "bpm": 0 }] }),
+            json!({ "version": 1, "name": "x", "tempos": [{ "timeSec": -1, "bpm": 120 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "gain": 5 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "pan": 1.5 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "midiIndex": -1 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t",
+                "dynamics": { "volume": [{ "t": 0, "v": 1.5 }] } }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t",
+                "notes": [{ "pitch": 60, "startSec": -1, "durationSec": 1 }] }] }),
+        ];
+        for case in cases {
+            assert!(
+                parse_project(case.clone()).is_err(),
+                "should reject: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_enum_variants_are_rejected() {
+        for bad in [
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "interpolation": "cubic" }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "filter": { "lfoShape": "ramp" } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "pitchMod": { "vibratoShape": "noise" } }] }),
+        ] {
+            assert!(parse_project(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn defaults_for_all_enum_types() {
+        assert_eq!(FilterType::default(), FilterType::Lowpass);
+        assert_eq!(LfoShape::default(), LfoShape::Sine);
+        assert_eq!(InterpolationMode::default(), InterpolationMode::Hermite);
+        assert_eq!(VoicePriority::default(), VoicePriority::Newest);
+        assert_eq!(StopMode::default(), StopMode::None);
+    }
 }

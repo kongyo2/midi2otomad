@@ -435,3 +435,47 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("Tauri アプリの起動に失敗しました");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn file_stem_name_extracts_final_component() {
+        assert_eq!(file_stem_name(Path::new("/home/user/song.mid")), "song.mid");
+        assert_eq!(file_stem_name(Path::new("clip.wav")), "clip.wav");
+        assert_eq!(file_stem_name(Path::new("/a/b/c.flac")), "c.flac");
+        assert_eq!(file_stem_name(Path::new("")), "");
+    }
+
+    #[test]
+    fn is_midi_matches_case_insensitively() {
+        assert!(is_midi(Path::new("song.mid")));
+        assert!(is_midi(Path::new("song.midi")));
+        assert!(is_midi(Path::new("SONG.MID")));
+        assert!(is_midi(Path::new("/path/to/Track.Midi")));
+    }
+
+    #[test]
+    fn is_midi_rejects_other_extensions() {
+        assert!(!is_midi(Path::new("song.wav")));
+        assert!(!is_midi(Path::new("song.mp3")));
+        assert!(!is_midi(Path::new("song")));
+        assert!(!is_midi(Path::new("midi"))); // 拡張子ではなくファイル名
+    }
+
+    #[test]
+    fn default_project_is_valid_and_named() {
+        let p = default_project();
+        assert_eq!(p.name, DEFAULT_PROJECT_NAME);
+        p.validate().expect("default project should validate");
+    }
+
+    #[test]
+    fn probe_media_reports_version() {
+        let probe = probe_media();
+        assert!(probe.backend.contains("rust"));
+        assert_eq!(probe.version, env!("CARGO_PKG_VERSION"));
+    }
+}

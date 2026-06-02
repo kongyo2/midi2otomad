@@ -155,4 +155,47 @@ mod tests {
         });
         assert!(close(pitch_offset_semitones(&params, 0.05), 7.0, 6));
     }
+
+    #[test]
+    fn negative_glide_rises_from_below() {
+        let params = mod_params(|p| {
+            p.glide_semitones = -12.0;
+            p.glide_ms = 100.0;
+        });
+        assert!(close(pitch_offset_semitones(&params, 0.0), -12.0, 9));
+        assert!(close(pitch_offset_semitones(&params, 0.05), -6.0, 9));
+        assert!(close(pitch_offset_semitones(&params, 0.1), 0.0, 9));
+    }
+
+    #[test]
+    fn square_vibrato_jumps_between_extremes() {
+        let params = mod_params(|p| {
+            p.vibrato_cents = 100.0; // 深さ 1 半音
+            p.vibrato_hz = 5.0;
+            p.vibrato_shape = LfoShape::Square;
+        });
+        // 位相 phase = t * hz。t=0.05 → phase 0.25 (<0.5) → +1。
+        assert!(close(pitch_offset_semitones(&params, 0.05), 1.0, 9));
+        // t=0.15 → phase 0.75 (>=0.5) → -1。
+        assert!(close(pitch_offset_semitones(&params, 0.15), -1.0, 9));
+    }
+
+    #[test]
+    fn vibrato_fully_engaged_after_fade() {
+        let params = mod_params(|p| {
+            p.vibrato_cents = 200.0; // 深さ 2 半音
+            p.vibrato_hz = 5.0;
+            p.vibrato_fade_ms = 50.0;
+        });
+        // フェード (50ms) を過ぎた t=0.05 はフェード係数 1.0。phase 0.25 → sin=+1。
+        assert!(close(pitch_offset_semitones(&params, 0.05), 2.0, 6));
+    }
+
+    #[test]
+    fn no_modulation_is_silent() {
+        let params = mod_params(|_| {});
+        for t in [0.0, 0.05, 0.1, 0.5, 1.0] {
+            assert_eq!(pitch_offset_semitones(&params, t), 0.0);
+        }
+    }
 }

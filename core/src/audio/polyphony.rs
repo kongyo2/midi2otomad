@@ -304,4 +304,48 @@ mod tests {
             vec![(0, 2.0), (1, 5.0), (2, 5.0)]
         );
     }
+
+    #[test]
+    fn empty_requests_allocate_nothing() {
+        assert!(allocate_voices(&[], &DEF).is_empty());
+    }
+
+    #[test]
+    fn single_request_passes_through() {
+        let rs = [d(60, 0.0, 1.5)];
+        assert_eq!(alloc(&rs, DEF), vec![(0, 1.5)]);
+        assert_eq!(
+            alloc(&rs, poly(8, VoicePriority::Newest, StopMode::Pitch)),
+            vec![(0, 1.5)]
+        );
+    }
+
+    #[test]
+    fn cap_above_demand_never_steals() {
+        let rs = [d(60, 0.0, 5.0), d(62, 0.1, 5.0), d(64, 0.2, 5.0)];
+        assert_eq!(
+            alloc(&rs, poly(8, VoicePriority::Newest, StopMode::None)),
+            vec![(0, 5.0), (1, 5.0), (2, 5.0)]
+        );
+    }
+
+    #[test]
+    fn non_overlapping_notes_reuse_one_voice() {
+        // 重ならないノートは 1 ボイスでも全部鳴る。
+        let rs = [d(60, 0.0, 0.5), d(62, 1.0, 0.5), d(64, 2.0, 0.5)];
+        assert_eq!(
+            alloc(&rs, poly(1, VoicePriority::Newest, StopMode::None)),
+            vec![(0, 0.5), (1, 0.5), (2, 0.5)]
+        );
+    }
+
+    #[test]
+    fn track_stop_mode_chokes_any_overlap() {
+        // StopMode::Track は音程・素材に関係なく直前のボイスを止める。
+        let rs = [d(60, 0.0, 5.0), d(67, 1.0, 5.0)];
+        assert_eq!(
+            alloc(&rs, poly(0, VoicePriority::Newest, StopMode::Track)),
+            vec![(0, 1.0), (1, 5.0)]
+        );
+    }
 }

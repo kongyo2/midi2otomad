@@ -40,4 +40,37 @@ mod tests {
         let b = make_id("id");
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn suffix_is_16_lowercase_hex_digits() {
+        let id = make_id("sample");
+        let suffix = id.strip_prefix("sample_").expect("prefix");
+        assert_eq!(suffix.len(), 16);
+        assert!(suffix
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+    }
+
+    #[test]
+    fn handles_empty_prefix() {
+        let id = make_id("");
+        assert!(id.starts_with('_'));
+        assert_eq!(id.len(), 17); // "_" + 16 hex
+    }
+
+    #[test]
+    fn many_ids_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..10_000 {
+            assert!(seen.insert(make_id("track")), "duplicate id generated");
+        }
+    }
+
+    #[test]
+    fn splitmix64_is_deterministic_and_mixes() {
+        // 同じ入力からは同じ出力。隣接入力でも出力は大きく変わる（雪崩効果）。
+        assert_eq!(splitmix64(12345), splitmix64(12345));
+        assert_ne!(splitmix64(0), splitmix64(1));
+        assert_ne!(splitmix64(0), 0);
+    }
 }

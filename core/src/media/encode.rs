@@ -281,4 +281,130 @@ mod tests {
         ]);
         assert_eq!(first, 1.0); // 2.0 clamped to 1.0
     }
+
+    fn read_i16(buf: &[u8], at: usize) -> i16 {
+        i16::from_le_bytes([buf[at], buf[at + 1]])
+    }
+
+    #[test]
+    fn mp3_rate_mapping_extended() {
+        // サポート系列の 2 の冪倍はその系列へ畳む。
+        assert_eq!(mp3_compatible_rate(192000), 48000); // 4x
+        assert_eq!(mp3_compatible_rate(176400), 44100); // 4x
+        assert_eq!(mp3_compatible_rate(64000), 32000); // 2x
+        assert_eq!(mp3_compatible_rate(384000), 48000); // 8x
+                                                        // 3 倍など 2 の冪でない比は直下のサポートレートへ落とす。
+        assert_eq!(mp3_compatible_rate(144000), 48000);
+        assert_eq!(mp3_compatible_rate(132300), 48000);
+        // どのサポートレートより低い値は最小レートへ。
+        assert_eq!(mp3_compatible_rate(4000), 8000);
+        assert_eq!(mp3_compatible_rate(1), 8000);
+        // 厳密に一致するレートはそのまま。
+        for r in [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000] {
+            assert_eq!(mp3_compatible_rate(r), r);
+        }
+    }
+
+    #[test]
+    fn wav_16bit_header_has_no_fact_chunk() {
+        let wav = encode_wav(48000, &[0.0; 4], &[0.0; 4], 4, 16);
+        assert_eq!(read_u32(&wav, 16), 16); // fmt size
+        assert_eq!(u16::from_le_bytes([wav[20], wav[21]]), 1); // PCM
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16); // bits per sample
+                                                                // 16bit は fact チャンク無しで data が 36 バイト目から始まる。
+        assert_eq!(&wav[36..40], b"data");
+        let data_size = read_u32(&wav, 40) as usize;
+        assert_eq!(data_size, 4 * 2 * 2);
+        assert_eq!(wav.len(), 44 + data_size);
+    }
+
+    #[test]
+    fn wav_16bit_encodes_expected_levels() {
+        // フルスケールはディザを足しても最大値付近に収まる。
+        let wav = encode_wav(48000, &[1.0, -1.0], &[1.0, -1.0], 2, 16);
+        let data_start = 44;
+        let l0 = read_i16(&wav, data_start);
+        let r0 = read_i16(&wav, data_start + 2);
+        // フルスケール +1.0 はディザ込みで i16 最大値付近 (>=32766)。
+        assert!(l0 >= 0x7ffe);
+        assert!(r0 >= 0x7ffe);
+        let l1 = read_i16(&wav, data_start + 4);
+        assert!(l1 <= -0x7ffe);
+    }
+
+    #[test]
+    fn wav_16bit_is_deterministic() {
+        // ディザ PRNG は固定シードなので同じ入力からは必ず同じバイト列。
+        let left: Vec<f32> = (0..64)
+            .map(|i| (i as f64 * 0.13).sin() as f32 * 0.6)
+            .collect();
+        let right: Vec<f32> = (0..64)
+            .map(|i| (i as f64 * 0.17).cos() as f32 * 0.6)
+            .collect();
+        let a = encode_wav(48000, &left, &right, 64, 16);
+        let b = encode_wav(48000, &left, &right, 64, 16);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn wav_24bit_encodes_signed_values() {
+        // +0.5 と -0.5 を 24bit リトルエンディアン（負は 2 の補数）で確認。
+        let wav = encode_wav(48000, &[0.5, -0.5], &[0.0, 0.0], 2, 24);
+        let data_start = 44;
+        let pos = (wav[data_start] as i32)
+            | ((wav[data_start + 1] as i32) << 8)
+            | ((wav[data_start + 2] as i32) << 16);
+        assert!((pos - 0x3f_ffff).abs() <= 1); // 0.5 * 0x7fffff
+
+        // 次フレーム左 = -0.5。3 バイト目の最上位ビットが立つ（負）。
+        let neg_at = data_start + 6;
+        assert!(wav[neg_at + 2] & 0x80 != 0);
+    }
+
+    #[test]
+    fn wav_interleaves_left_and_right() {
+        // 32bit float なら可逆。L/R が交互に並ぶ並びを確認。
+        let wav = encode_wav(48000, &[0.25, 0.5], &[-0.25, -0.5], 2, 32);
+        let read_f32 =
+            |at: usize| f32::from_le_bytes([wav[at], wav[at + 1], wav[at + 2], wav[at + 3]]);
+        let data_start = 58;
+        assert!((read_f32(data_start) - 0.25).abs() < 1e-6);
+        assert!((read_f32(data_start + 4) - (-0.25)).abs() < 1e-6);
+        assert!((read_f32(data_start + 8) - 0.5).abs() < 1e-6);
+        assert!((read_f32(data_start + 12) - (-0.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wav_pads_short_channel_with_silence() {
+        // frames が右チャンネル長を超えるとき、不足分は無音 0 で埋まる。
+        let wav = encode_wav(48000, &[0.5, 0.5, 0.5], &[0.5], 3, 32);
+        let read_f32 =
+            |at: usize| f32::from_le_bytes([wav[at], wav[at + 1], wav[at + 2], wav[at + 3]]);
+        let data_start = 58;
+        // 2 フレーム目の右チャンネルは存在しないので 0。
+        assert_eq!(read_f32(data_start + 12), 0.0);
+    }
+
+    #[cfg(feature = "mp3")]
+    #[test]
+    fn mp3_resamples_unsupported_rate() {
+        // 50000 Hz は MP3 非対応なので 48000 へ落としてからエンコードする。
+        let frames = 5000usize;
+        let tone: Vec<f32> = (0..frames)
+            .map(|i| (i as f64 * 2.0 * std::f64::consts::PI * 440.0 / 50000.0).sin() as f32 * 0.4)
+            .collect();
+        let mp3 = encode_mp3(50000, &tone, &tone, frames, 192).expect("encode mp3");
+        assert!(mp3.len() > 500);
+    }
+
+    #[cfg(feature = "mp3")]
+    #[test]
+    fn mp3_handles_supported_rate_without_resample() {
+        let frames = 4000usize;
+        let tone: Vec<f32> = (0..frames)
+            .map(|i| (i as f64 * 2.0 * std::f64::consts::PI * 330.0 / 44100.0).sin() as f32 * 0.4)
+            .collect();
+        let mp3 = encode_mp3(44100, &tone, &tone, frames, 128).expect("encode mp3");
+        assert!(mp3.len() > 500);
+    }
 }
