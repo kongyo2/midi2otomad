@@ -6,6 +6,7 @@ import { pitchOffsetSemitones } from "./pitchmod";
 import { createBiquadState, designBiquad, processBiquadSample, type BiquadCoeffs } from "./filter";
 import { lfoValue } from "./lfo";
 import { createReverb, reverbDecaySeconds } from "./reverb";
+import { allocateVoices } from "./polyphony";
 
 /** Decoded source material: one Float32Array per channel, all the same length. */
 export interface PcmAudio {
@@ -374,12 +375,22 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
     }
     const pan = panGains(track.pan);
     const trackDyn = buildTrackDynamics(track, frames, outRate);
-    for (const note of track.notes) {
-      const resolved = resolveNoteSource(track, note, sampleById, bank);
-      if (resolved === null) {
-        continue;
-      }
-      renderNote(note, resolved.sample, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
+    const voices = track.notes
+      .map((note) => ({ note, resolved: resolveNoteSource(track, note, sampleById, bank) }))
+      .filter((voice): voice is { note: Note; resolved: { sample: Sample; src: PcmAudio } } => voice.resolved !== null);
+    const allocations = allocateVoices(
+      voices.map(({ note, resolved }) => ({
+        pitch: note.pitch,
+        startSec: note.startSec,
+        durationSec: note.durationSec,
+        sampleId: resolved.sample.id,
+      })),
+      track.polyphony,
+    );
+    for (const { index, durationSec } of allocations) {
+      const { note, resolved } = voices[index]!;
+      const gated = durationSec === note.durationSec ? note : { ...note, durationSec };
+      renderNote(gated, resolved.sample, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
     }
   }
 

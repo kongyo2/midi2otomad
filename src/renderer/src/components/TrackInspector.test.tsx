@@ -83,6 +83,61 @@ describe("TrackInspector", () => {
     expect(value.updateTrack).toHaveBeenCalledWith("t1", { reverbSend: 0.5 });
   });
 
+  it("edits the maximum simultaneous voice count", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.change(screen.getByRole("spinbutton", { name: /最大同時発音数/ }), { target: { value: "3" } });
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", {
+      polyphony: { maxVoices: 3, priority: "newest", stopMode: "none" },
+    });
+  });
+
+  it("clamps the voice count to the supported range", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.change(screen.getByRole("spinbutton", { name: /最大同時発音数/ }), { target: { value: "200" } });
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", {
+      polyphony: { maxVoices: 64, priority: "newest", stopMode: "none" },
+    });
+  });
+
+  it("edits the playback priority", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.change(screen.getByRole("combobox", { name: /優先再生/ }), { target: { value: "oldest" } });
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", {
+      polyphony: { maxVoices: 0, priority: "oldest", stopMode: "none" },
+    });
+  });
+
+  it("edits the stop method", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.change(screen.getByRole("combobox", { name: /停止方法/ }), { target: { value: "pitch" } });
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", {
+      polyphony: { maxVoices: 0, priority: "newest", stopMode: "pitch" },
+    });
+  });
+
+  it("shows when the voice count is unlimited", () => {
+    holder.value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    render(<TrackInspector />);
+    expect(screen.getByText("無制限")).toBeInTheDocument();
+  });
+
+  it("shows the configured voice count", () => {
+    holder.value = makeStudioValue({
+      project: projectWithTrack({ polyphony: { maxVoices: 4, priority: "newest", stopMode: "none" } }),
+      selectedTrackId: "t1",
+    });
+    render(<TrackInspector />);
+    expect(screen.getByText("4 音")).toBeInTheDocument();
+  });
+
   it("renders pan labels for center, left and right", () => {
     holder.value = makeStudioValue({ project: projectWithTrack({ pan: 0 }), selectedTrackId: "t1" });
     const { rerender } = render(<TrackInspector />);

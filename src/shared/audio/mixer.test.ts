@@ -725,6 +725,49 @@ describe("mixProject reverb send", () => {
   });
 });
 
+describe("mixProject polyphony", () => {
+  const dry = sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } });
+
+  function polyMix(notes: unknown[], polyphony: Record<string, unknown>): Float32Array {
+    const project = makeProject({ samples: [dry], tracks: [trackRaw({ notes, polyphony })] });
+    return mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false }).left;
+  }
+
+  it("lets a held note keep ringing when stop grouping is off", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 60, startSec: 0.5, durationSec: 0.05, velocity: 127 },
+    ];
+    expect(Math.abs(polyMix(notes, { stopMode: "none" })[800]!)).toBeGreaterThan(0);
+  });
+
+  it("chokes the earlier same-pitch note under pitch stop mode", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 60, startSec: 0.5, durationSec: 0.05, velocity: 127 },
+    ];
+    expect(polyMix(notes, { stopMode: "pitch" })[800]).toBe(0);
+  });
+
+  it("sums every overlapping voice when the cap is unlimited", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 64, startSec: 0.2, durationSec: 1, velocity: 127 },
+      { pitch: 67, startSec: 0.4, durationSec: 1, velocity: 127 },
+    ];
+    expect(polyMix(notes, { maxVoices: 0 })[600]!).toBeCloseTo(3, 5);
+  });
+
+  it("steals the oldest voice once a track exceeds its cap", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 64, startSec: 0.2, durationSec: 1, velocity: 127 },
+      { pitch: 67, startSec: 0.4, durationSec: 1, velocity: 127 },
+    ];
+    expect(polyMix(notes, { maxVoices: 2 })[600]!).toBeCloseTo(2, 5);
+  });
+});
+
 describe("mixProject buffer bounds", () => {
   it("skips frames scheduled before time zero", () => {
     const project = makeProject({ samples: [sampleRaw()], tracks: [trackRaw()] });
