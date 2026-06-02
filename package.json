@@ -1,6 +1,6 @@
 {
   "name": "midi2otomad",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "単体で完結するGUIを備えたMIDI音MAD作成デスクトップアプリ",
   "author": "kongyo2",
   "license": "MIT",
