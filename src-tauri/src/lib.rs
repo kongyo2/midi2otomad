@@ -204,7 +204,7 @@ fn open_audio(app: AppHandle, state: State<AppState>) -> Result<Vec<SampleDto>, 
     Ok(samples)
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 fn ingest_paths(
     state: State<AppState>,
     paths: Vec<String>,
