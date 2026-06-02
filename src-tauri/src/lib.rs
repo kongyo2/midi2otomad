@@ -241,7 +241,7 @@ fn remove_sample(state: State<AppState>, id: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 fn preview_sample(
     state: State<AppState>,
     sample: Sample,
@@ -289,7 +289,7 @@ fn preview_sample(
     Ok(())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 fn set_mix(state: State<AppState>, project: Project) -> Result<MixSummary, String> {
     let mix = state.render(&project, MixOptions::default())?;
     load_into_player(&state, &mix);
