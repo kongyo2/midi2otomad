@@ -624,52 +624,32 @@ mod tests {
     use crate::schema::parse_project;
     use serde_json::{json, Value};
 
-    fn const_source(value: f32, frames: usize) -> PcmAudio {
+    fn mono_source(frames: usize, sample_rate: f64, gen: impl Fn(usize) -> f32) -> PcmAudio {
         PcmAudio {
-            sample_rate: 1000.0,
-            channels: vec![vec![value; frames]],
+            sample_rate,
+            channels: vec![(0..frames).map(gen).collect()],
             frames,
         }
+    }
+
+    fn const_source(value: f32, frames: usize) -> PcmAudio {
+        mono_source(frames, 1000.0, |_| value)
     }
 
     fn ramp_source(frames: usize) -> PcmAudio {
-        let ch: Vec<f32> = (0..frames).map(|i| (i % 100) as f32 / 100.0).collect();
-        PcmAudio {
-            sample_rate: 1000.0,
-            channels: vec![ch],
-            frames,
-        }
+        mono_source(frames, 1000.0, |i| (i % 100) as f32 / 100.0)
     }
 
     fn mono_ramp_source(frames: usize) -> PcmAudio {
-        let ch: Vec<f32> = (0..frames).map(|i| i as f32 / frames as f32).collect();
-        PcmAudio {
-            sample_rate: 1000.0,
-            channels: vec![ch],
-            frames,
-        }
+        mono_source(frames, 1000.0, |i| i as f32 / frames as f32)
     }
 
     fn nyquist_source(frames: usize) -> PcmAudio {
-        let ch: Vec<f32> = (0..frames)
-            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
-            .collect();
-        PcmAudio {
-            sample_rate: 1000.0,
-            channels: vec![ch],
-            frames,
-        }
+        mono_source(frames, 1000.0, |i| if i % 2 == 0 { 1.0 } else { -1.0 })
     }
 
     fn bright_source(frames: usize, rate: f64) -> PcmAudio {
-        let ch: Vec<f32> = (0..frames)
-            .map(|i| if (i / 2) % 2 == 0 { 1.0 } else { -1.0 })
-            .collect();
-        PcmAudio {
-            sample_rate: rate,
-            channels: vec![ch],
-            frames,
-        }
+        mono_source(frames, rate, |i| if (i / 2) % 2 == 0 { 1.0 } else { -1.0 })
     }
 
     fn merge(mut base: Value, over: Value) -> Value {
