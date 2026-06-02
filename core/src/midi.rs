@@ -303,9 +303,7 @@ pub fn midi_to_project(
         samples: previous_samples,
         tracks,
         reverb: previous.map(|p| p.reverb.clone()).unwrap_or_default(),
-        output: previous
-            .map(|p| p.output.clone())
-            .unwrap_or_default(),
+        output: previous.map(|p| p.output.clone()).unwrap_or_default(),
     };
     project.validate()?;
 

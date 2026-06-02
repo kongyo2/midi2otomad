@@ -82,10 +82,7 @@ mod tests {
 
     #[test]
     fn doubles_when_raising_rate() {
-        assert_eq!(
-            resample_channel(&[0.0f32; 50], 24000.0, 48000.0).len(),
-            100
-        );
+        assert_eq!(resample_channel(&[0.0f32; 50], 24000.0, 48000.0).len(), 100);
     }
 
     #[test]

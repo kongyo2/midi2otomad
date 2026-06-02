@@ -80,7 +80,6 @@ pub enum FilterType {
     Allpass,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -92,7 +91,6 @@ pub enum LfoShape {
     Saw,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -101,7 +99,6 @@ pub enum InterpolationMode {
     #[default]
     Hermite,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -114,7 +111,6 @@ pub enum VoicePriority {
     Lowest,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[derive(Default)]
@@ -125,7 +121,6 @@ pub enum StopMode {
     Sample,
     Track,
 }
-
 
 // --- ネストした設定構造体 -------------------------------------------------
 

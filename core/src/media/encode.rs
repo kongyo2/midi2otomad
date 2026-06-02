@@ -1,6 +1,7 @@
 //! ミックス PCM を WAV / MP3 のバイト列へエンコードする。ファイル書き込みは呼び出し側
 //! (Tauri バックエンド) の責務で、ここではバイト列を返すだけにとどめる。
 
+#[cfg(feature = "mp3")]
 use crate::audio::resample::resample_channel;
 
 /// WAV のビット深度。
@@ -38,6 +39,7 @@ fn clamp(x: f64) -> f64 {
     }
 }
 
+#[cfg(feature = "mp3")]
 fn full_channel(channel: &[f32], frames: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; frames];
     let n = channel.len().min(frames);
