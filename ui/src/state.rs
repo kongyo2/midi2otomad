@@ -18,7 +18,8 @@ pub struct Studio {
     pub status: RwSignal<PlayerStatus>,
     pub busy: RwSignal<Option<String>>,
     pub toast: RwSignal<Option<String>>,
-    pub dirty: RwSignal<bool>,
+    pub edit_seq: RwSignal<u64>,
+    pub mixed_seq: RwSignal<u64>,
     pub drag_active: RwSignal<bool>,
 }
 
@@ -44,7 +45,8 @@ impl Studio {
             status: RwSignal::new(PlayerStatus::default()),
             busy: RwSignal::new(None),
             toast: RwSignal::new(None),
-            dirty: RwSignal::new(true),
+            edit_seq: RwSignal::new(1),
+            mixed_seq: RwSignal::new(0),
             drag_active: RwSignal::new(false),
         }
     }
@@ -56,7 +58,7 @@ impl Studio {
     }
 
     pub fn mark_dirty(&self) {
-        self.dirty.set(true);
+        self.edit_seq.update(|n| *n += 1);
     }
 
     fn snapshot(&self) -> Project {
@@ -210,10 +212,13 @@ impl Studio {
     {
         let this = *self;
         spawn_local(async move {
-            if this.dirty.get_untracked() {
+            let seq = this.edit_seq.get_untracked();
+            if this.mixed_seq.get_untracked() != seq {
                 let project = this.snapshot();
                 let _ = api::set_mix(&project).await;
-                this.dirty.set(false);
+                // レンダリング中に編集が入ると edit_seq が進むため、この世代だけを
+                // 「ミックス済み」として記録し、より新しい編集を取りこぼさない。
+                this.mixed_seq.set(seq);
             }
             after.await;
         });
@@ -257,7 +262,7 @@ impl Studio {
             let _ = api::preview_sample(&sample, None).await;
             // 試聴はプレイヤーのバッファを差し替えるので、次の再生/シークで
             // プロジェクトのミックスを必ず再レンダリングさせる。
-            this.dirty.set(true);
+            this.mark_dirty();
         });
     }
 
