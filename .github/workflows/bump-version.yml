@@ -31,39 +31,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump version
+      - name: Compute and apply version
         id: bump
         env:
           BUMP: ${{ inputs.bump }}
           CUSTOM_VERSION: ${{ inputs.custom_version }}
         run: |
+          current="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
           if [ -n "${CUSTOM_VERSION}" ]; then
-            target="${CUSTOM_VERSION}"
+            new="${CUSTOM_VERSION}"
           else
-            target="${BUMP}"
+            IFS='.' read -r major minor patch <<< "${current}"
+            case "${BUMP}" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              *) patch=$((patch + 1)) ;;
+            esac
+            new="${major}.${minor}.${patch}"
           fi
-          new_version="$(npm version "${target}" --message 'chore: bump version to %s')"
-          echo "version=${new_version}" >> "${GITHUB_OUTPUT}"
+          sed -i "0,/^version = \".*\"/s//version = \"${new}\"/" Cargo.toml
+          sed -i "s/\"version\": \".*\"/\"version\": \"${new}\"/" src-tauri/tauri.conf.json
+          echo "version=${new}" >> "${GITHUB_OUTPUT}"
 
-      - name: Push commit and tag
+      - name: Commit, tag and push
         env:
-          BRANCH: ${{ github.ref_name }}
           NEW_VERSION: ${{ steps.bump.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
         run: |
+          git commit -am "chore: bump version to v${NEW_VERSION}"
+          git tag "v${NEW_VERSION}"
           git push origin HEAD:"${BRANCH}"
-          git push origin "${NEW_VERSION}"
+          git push origin "v${NEW_VERSION}"
 
       - name: Summary
         env:
           NEW_VERSION: ${{ steps.bump.outputs.version }}
-        run: echo "Bumped version to **${NEW_VERSION}**" >> "${GITHUB_STEP_SUMMARY}"
+        run: echo "Bumped version to **v${NEW_VERSION}**" >> "${GITHUB_STEP_SUMMARY}"
