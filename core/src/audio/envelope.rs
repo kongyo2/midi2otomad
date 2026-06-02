@@ -158,4 +158,74 @@ mod tests {
     fn curve_shaping() {
         assert!(envelope_level(&env(|e| e.attack_curve = 4.0), 0.05, HELD_OPEN) < 0.5);
     }
+
+    #[test]
+    fn full_dahdsr_chain() {
+        // delay 20 / attack 80 / hold 50 / decay 100 / sustain 0.4 / release 200 ms。
+        let e = env(|e| {
+            e.delay_ms = 20.0;
+            e.attack_ms = 80.0;
+            e.hold_ms = 50.0;
+            e.decay_ms = 100.0;
+            e.sustain = 0.4;
+            e.release_ms = 200.0;
+        });
+        assert_eq!(envelope_level(&e, 0.01, HELD_OPEN), 0.0); // ディレイ中
+        assert!(close(envelope_level(&e, 0.06, HELD_OPEN), 0.5, 9)); // アタック中点
+        assert!(close(envelope_level(&e, 0.12, HELD_OPEN), 1.0, 9)); // ホールド
+        assert!(close(envelope_level(&e, 0.20, HELD_OPEN), 0.7, 9)); // ディケイ中点
+        assert!(close(envelope_level(&e, 0.30, HELD_OPEN), 0.4, 9)); // サステイン
+    }
+
+    #[test]
+    fn release_starts_from_sustain_level() {
+        let e = env(|e| {
+            e.attack_ms = 0.0;
+            e.decay_ms = 100.0;
+            e.sustain = 0.4;
+            e.release_ms = 200.0;
+        });
+        // ゲートを decay 終了後 (0.1s) に閉じると、サステイン 0.4 から減衰する。
+        assert!(close(envelope_level(&e, 0.1, 0.1), 0.4, 9));
+        assert!(close(envelope_level(&e, 0.2, 0.1), 0.2, 9));
+        assert!(close(envelope_level(&e, 0.35, 0.1), 0.0, 9));
+    }
+
+    #[test]
+    fn instant_attack_reaches_peak_immediately() {
+        let e = env(|e| {
+            e.delay_ms = 0.0;
+            e.attack_ms = 0.0;
+        });
+        assert!(close(envelope_level(&e, 0.0, HELD_OPEN), 1.0, 9));
+    }
+
+    #[test]
+    fn release_curve_slows_initial_decay() {
+        let linear = env(|e| {
+            e.attack_ms = 0.0;
+            e.release_ms = 100.0;
+            e.release_curve = 0.0;
+        });
+        let curved = env(|e| {
+            e.attack_ms = 0.0;
+            e.release_ms = 100.0;
+            e.release_curve = 4.0;
+        });
+        // ゲートは 0.1s で閉じ、リリース中点 0.15s を比較。
+        let lin = envelope_level(&linear, 0.15, 0.1);
+        let cur = envelope_level(&curved, 0.15, 0.1);
+        assert!(cur > lin);
+    }
+
+    #[test]
+    fn zero_gate_is_immediately_in_release() {
+        // gate_sec が 0 なら即リリース。アタック 0 で到達済みの 1.0 から減衰する。
+        let e = env(|e| {
+            e.attack_ms = 0.0;
+            e.release_ms = 100.0;
+        });
+        assert!(close(envelope_level(&e, 0.0, 0.0), 1.0, 9));
+        assert!(close(envelope_level(&e, 0.05, 0.0), 0.5, 9));
+    }
 }

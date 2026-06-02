@@ -242,3 +242,29 @@ where
         )
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::interleave;
+
+    #[test]
+    fn interleaves_equal_length_channels() {
+        assert_eq!(
+            interleave(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]),
+            vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn pads_shorter_channel_with_zero() {
+        // 右が短いと不足フレームは 0 で補う。
+        assert_eq!(interleave(&[1.0, 2.0], &[3.0]), vec![1.0, 3.0, 2.0, 0.0]);
+        // 左が短い場合も同様。
+        assert_eq!(interleave(&[1.0], &[3.0, 4.0]), vec![1.0, 3.0, 0.0, 4.0]);
+    }
+
+    #[test]
+    fn empty_channels_yield_empty() {
+        assert!(interleave(&[], &[]).is_empty());
+    }
+}

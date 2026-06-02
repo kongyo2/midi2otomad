@@ -90,4 +90,46 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn square_boundaries() {
+        // frac < 0.5 で +1、それ以外で -1。境界 0.0 と 0.5 を確認。
+        assert_eq!(lfo_value(LfoShape::Square, 0.0), 1.0);
+        assert_eq!(lfo_value(LfoShape::Square, 0.49), 1.0);
+        assert_eq!(lfo_value(LfoShape::Square, 0.5), -1.0);
+        assert_eq!(lfo_value(LfoShape::Square, 0.99), -1.0);
+    }
+
+    #[test]
+    fn negative_phase_wraps_for_all_shapes() {
+        for shape in [
+            LfoShape::Sine,
+            LfoShape::Triangle,
+            LfoShape::Square,
+            LfoShape::Saw,
+        ] {
+            assert!(close(lfo_value(shape, -0.25), lfo_value(shape, 0.75), 9));
+            assert!(close(lfo_value(shape, -1.3), lfo_value(shape, 0.7), 9));
+        }
+    }
+
+    #[test]
+    fn triangle_is_continuous_and_peaks() {
+        // 三角波は 0.25 で +1、0.75 で -1 のピーク。途中で連続。
+        assert!(close(lfo_value(LfoShape::Triangle, 0.25), 1.0, 9));
+        assert!(close(lfo_value(LfoShape::Triangle, 0.75), -1.0, 9));
+        let a = lfo_value(LfoShape::Triangle, 0.3);
+        let b = lfo_value(LfoShape::Triangle, 0.31);
+        assert!((a - b).abs() < 0.05);
+    }
+
+    #[test]
+    fn sine_completes_full_cycle() {
+        assert!(close(lfo_value(LfoShape::Sine, 1.0), 0.0, 9));
+        assert!(close(
+            lfo_value(LfoShape::Sine, 0.1),
+            (2.0 * PI * 0.1).sin(),
+            9
+        ));
+    }
 }

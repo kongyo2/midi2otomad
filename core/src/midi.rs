@@ -485,4 +485,182 @@ mod tests {
             Some("kept")
         );
     }
+
+    fn note_on(tick_delta: u32, key: u8, vel: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta(tick_delta),
+            kind: TrackEventKind::Midi {
+                channel: 0.into(),
+                message: MidiMessage::NoteOn {
+                    key: u7::new(key),
+                    vel: u7::new(vel),
+                },
+            },
+        }
+    }
+
+    fn note_off(tick_delta: u32, key: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta(tick_delta),
+            kind: TrackEventKind::Midi {
+                channel: 0.into(),
+                message: MidiMessage::NoteOff {
+                    key: u7::new(key),
+                    vel: u7::new(0),
+                },
+            },
+        }
+    }
+
+    fn end_of_track() -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta(0),
+            kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+        }
+    }
+
+    #[test]
+    fn velocity_zero_note_on_acts_as_note_off() {
+        let events = vec![
+            note_on(0, 60, 100),
+            note_on(480, 60, 0), // velocity 0 = note off
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert_eq!(result.note_count, 1);
+        let note = &result.project.tracks[0].notes[0];
+        assert_eq!(note.pitch, 60);
+        assert!((note.duration_sec - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn imports_control_changes_as_dynamics() {
+        let cc = |tick: u32, controller: u8, value: u8| TrackEvent {
+            delta: delta(tick),
+            kind: TrackEventKind::Midi {
+                channel: 0.into(),
+                message: MidiMessage::Controller {
+                    controller: u7::new(controller),
+                    value: u7::new(value),
+                },
+            },
+        };
+        let events = vec![
+            cc(0, 7, 127), // volume full
+            cc(0, 11, 64), // expression ~half
+            note_on(0, 60, 100),
+            note_off(480, 60),
+            cc(0, 7, 0), // volume zero
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let dyn_ = &result.project.tracks[0].dynamics;
+        assert_eq!(dyn_.volume.len(), 2);
+        assert!((dyn_.volume[0].v - 1.0).abs() < 1e-9);
+        assert!((dyn_.volume[1].v - 0.0).abs() < 1e-9);
+        assert_eq!(dyn_.expression.len(), 1);
+        assert!((dyn_.expression[0].v - 64.0 / 127.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn tempo_change_shifts_later_notes() {
+        let events = vec![
+            TrackEvent {
+                delta: delta(0),
+                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(500_000))), // 120 BPM
+            },
+            note_on(0, 60, 100),
+            note_off(480, 60), // 1 beat @120 = 0.5s
+            TrackEvent {
+                delta: delta(0),
+                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(250_000))), // 240 BPM
+            },
+            note_on(0, 64, 100),
+            note_off(480, 64), // 1 beat @240 = 0.25s
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let notes = &result.project.tracks[0].notes;
+        assert_eq!(notes.len(), 2);
+        assert!((notes[0].start_sec - 0.0).abs() < 1e-6);
+        assert!((notes[0].duration_sec - 0.5).abs() < 1e-3);
+        assert!((notes[1].start_sec - 0.5).abs() < 1e-3);
+        assert!((notes[1].duration_sec - 0.25).abs() < 1e-3);
+        assert_eq!(result.project.tempos.len(), 2);
+        assert!((result.project.bpm - 120.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unclosed_notes_are_dropped() {
+        // NoteOff が来ないノートは active のまま追加されず、トラックごと消える。
+        let events = vec![note_on(0, 60, 100), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert_eq!(result.track_count, 0);
+        assert_eq!(result.note_count, 0);
+    }
+
+    #[test]
+    fn clamps_very_short_notes_to_minimum_duration() {
+        // tick 0→1 のごく短いノートは下限 0.02 秒へ。
+        let events = vec![note_on(0, 60, 100), note_off(1, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert!((result.project.tracks[0].notes[0].duration_sec - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn names_unnamed_tracks_by_index() {
+        let events = vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert_eq!(result.project.tracks[0].name, "Track 1");
+    }
+
+    #[test]
+    fn empty_filename_falls_back_to_default_name() {
+        let events = vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), ".mid", None).unwrap();
+        assert_eq!(result.project.name, "音MAD");
+    }
+
+    #[test]
+    fn carries_polyphony_and_reverb_send_from_previous() {
+        let previous = crate::schema::parse_project(serde_json::json!({
+            "version": 1, "name": "prev",
+            "samples": [{ "id": "kept", "name": "k" }],
+            "tracks": [{
+                "id": "old", "name": "old", "midiIndex": 0,
+                "reverbSend": 0.5,
+                "polyphony": { "maxVoices": 4, "priority": "oldest", "stopMode": "pitch" }
+            }]
+        }))
+        .unwrap();
+        let events = vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", Some(&previous)).unwrap();
+        let track = &result.project.tracks[0];
+        assert_eq!(track.midi_index, Some(0));
+        assert!((track.reverb_send - 0.5).abs() < 1e-9);
+        assert_eq!(track.polyphony.max_voices, 4);
+        assert_eq!(
+            track.polyphony.priority,
+            crate::schema::VoicePriority::Oldest
+        );
+        assert_eq!(track.polyphony.stop_mode, crate::schema::StopMode::Pitch);
+    }
+
+    #[test]
+    fn rejects_invalid_midi_bytes() {
+        assert!(midi_to_project(&[0, 1, 2, 3], "x.mid", None).is_err());
+        assert!(midi_to_project(&[], "x.mid", None).is_err());
+    }
+
+    #[test]
+    fn assigns_distinct_track_colors_from_palette() {
+        let result = midi_to_project(
+            &write_smf(vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()]),
+            "x.mid",
+            None,
+        )
+        .unwrap();
+        // 最初のトラックはパレット先頭色。
+        assert_eq!(result.project.tracks[0].color, TRACK_PALETTE[0]);
+    }
 }

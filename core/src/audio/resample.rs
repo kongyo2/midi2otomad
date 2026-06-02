@@ -109,4 +109,48 @@ mod tests {
         let out = resample_channel(&tone(5000.0, 96000.0, 960), 96000.0, 48000.0);
         assert!(out.iter().all(|v| v.is_finite()));
     }
+
+    #[test]
+    fn single_sample_input() {
+        let out = resample_channel(&[0.5f32], 48000.0, 48000.0);
+        assert_eq!(out.len(), 1);
+        assert!((out[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn preserves_constant_when_upsampling() {
+        // 定数信号はアップサンプル（フィルタ無し）で値を保つ。
+        let out = resample_channel(&[0.5f32; 50], 24000.0, 48000.0);
+        assert_eq!(out.len(), 100);
+        assert!(out.iter().all(|&v| (v - 0.5).abs() < 1e-5));
+    }
+
+    #[test]
+    fn output_length_follows_ratio() {
+        // 3 倍ダウンサンプルは概ね 1/3 の長さ。
+        assert_eq!(
+            resample_channel(&[0.0f32; 300], 48000.0, 16000.0).len(),
+            100
+        );
+        // 4 倍アップサンプル。
+        assert_eq!(resample_channel(&[0.0f32; 25], 12000.0, 48000.0).len(), 100);
+    }
+
+    #[test]
+    fn preserves_low_frequency_amplitude() {
+        // ナイキストよりずっと低いトーンはダウンサンプルでも振幅をほぼ保つ。
+        let src = tone(500.0, 48000.0, 4800);
+        let out = resample_channel(&src, 48000.0, 24000.0);
+        assert!(rms(&out, out.len() / 2) > 0.6); // 元の RMS ≈ 0.707
+    }
+
+    #[test]
+    fn upsample_then_downsample_roundtrip_is_close() {
+        let src = tone(800.0, 24000.0, 2400);
+        let up = resample_channel(&src, 24000.0, 48000.0);
+        let back = resample_channel(&up, 48000.0, 24000.0);
+        assert_eq!(back.len(), src.len());
+        // 中盤の RMS が元と同程度に戻る。
+        assert!((rms(&back, src.len() / 2) - rms(&src, src.len() / 2)).abs() < 0.1);
+    }
 }

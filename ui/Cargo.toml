@@ -18,6 +18,9 @@ console_error_panic_hook = "0.1"
 gloo-timers = { version = "0.3", features = ["futures"] }
 midi2otomad-core = { path = "../core", default-features = false }
 
+[dev-dependencies]
+serde_json = "1"
+
 [dependencies.web-sys]
 version = "0.3"
 features = [

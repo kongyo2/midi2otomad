@@ -311,3 +311,67 @@ pub fn project_duration(project: &Project) -> f64 {
         .map(|n| n.start_sec + n.duration_sec)
         .fold(0.0, f64::max)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use midi2otomad_core::schema::parse_project;
+    use serde_json::json;
+
+    fn project_with_notes() -> Project {
+        parse_project(json!({
+            "version": 1, "name": "t",
+            "samples": [{ "id": "s1", "name": "kick" }, { "id": "s2", "name": "snare" }],
+            "tracks": [
+                { "id": "t1", "name": "a", "notes": [
+                    { "pitch": 60, "startSec": 0.0, "durationSec": 1.0 },
+                    { "pitch": 62, "startSec": 2.0, "durationSec": 0.5 }
+                ] },
+                { "id": "t2", "name": "b", "notes": [
+                    { "pitch": 48, "startSec": 1.0, "durationSec": 3.0 }
+                ] }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn project_duration_is_last_note_end() {
+        // 最も遅く終わるのは t2 の 1.0 + 3.0 = 4.0。
+        assert!((project_duration(&project_with_notes()) - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn project_duration_zero_without_notes() {
+        let empty = parse_project(json!({ "version": 1, "name": "e" })).unwrap();
+        assert_eq!(project_duration(&empty), 0.0);
+    }
+
+    #[test]
+    fn find_sample_by_id() {
+        let p = project_with_notes();
+        assert_eq!(
+            find_sample(&p, "s2").map(|s| s.name),
+            Some("snare".to_string())
+        );
+        assert!(find_sample(&p, "missing").is_none());
+    }
+
+    #[test]
+    fn sample_from_dto_sets_loop_to_full_clip() {
+        let dto = SampleDto {
+            id: "x".to_string(),
+            name: "clip".to_string(),
+            file_name: "clip.wav".to_string(),
+            duration_sec: 2.5,
+            peaks: vec![0.1, 0.2],
+        };
+        let s = sample_from_dto(&dto);
+        assert_eq!(s.id, "x");
+        assert_eq!(s.name, "clip");
+        assert_eq!(s.file_name, "clip.wav");
+        assert_eq!(s.duration_sec, 2.5);
+        assert!(!s.loop_region.enabled);
+        assert_eq!(s.loop_region.end_sec, 2.5);
+    }
+}

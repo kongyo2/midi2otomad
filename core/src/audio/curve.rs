@@ -68,4 +68,41 @@ mod tests {
         assert_eq!(shape_curve(-0.5, 3.0), 0.0);
         assert_eq!(shape_curve(1.5, 3.0), 1.0);
     }
+
+    #[test]
+    fn negative_tension_is_monotonic() {
+        let mut prev = f64::NEG_INFINITY;
+        for i in 0..=20 {
+            let value = shape_curve(i as f64 / 20.0, -4.0);
+            assert!(value >= prev);
+            prev = value;
+        }
+    }
+
+    #[test]
+    fn midpoint_falls_with_increasing_tension() {
+        // tension が大きいほど中点は下に膨らむ（単調減少）。
+        let a = shape_curve(0.5, 1.0);
+        let b = shape_curve(0.5, 3.0);
+        let c = shape_curve(0.5, 6.0);
+        assert!(a > b && b > c);
+        assert!(c > 0.0);
+    }
+
+    #[test]
+    fn stable_for_extreme_tension() {
+        for k in [-8.0, -7.5, 7.5, 8.0] {
+            for i in 0..=10 {
+                let v = shape_curve(i as f64 / 10.0, k);
+                assert!(v.is_finite());
+                assert!((0.0..=1.0).contains(&v));
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_tension_behaves_like_linear() {
+        // 線形とみなす閾値ちょうど未満ならクランプ値をそのまま返す。
+        assert_eq!(shape_curve(0.37, 1e-7), 0.37);
+    }
 }

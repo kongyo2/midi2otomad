@@ -316,4 +316,62 @@ mod tests {
             assert!((v as f64).abs() < 1.0);
         }
     }
+
+    #[test]
+    fn fully_dry_and_wet_zero_is_silent() {
+        let out = create_reverb(
+            FS,
+            rev(|p| {
+                p.wet = 0.0;
+                p.dry = 0.0;
+            }),
+        )
+        .process_block(&impulse(2000), &impulse(2000));
+        assert!(out.left.iter().all(|&v| v == 0.0));
+        assert!(out.right.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn dry_signal_scales_with_dry_level() {
+        let half = create_reverb(
+            FS,
+            rev(|p| {
+                p.wet = 0.0;
+                p.dry = 0.5;
+            }),
+        )
+        .process_block(&impulse(64), &impulse(64));
+        assert!(close(half.left[0] as f64, 0.5, 9));
+    }
+
+    #[test]
+    fn runs_at_different_sample_rates() {
+        for rate in [22050.0, 44100.0, 48000.0, 96000.0] {
+            let out = create_reverb(rate, rev(|p| p.room_size = 0.7))
+                .process_block(&impulse(8000), &impulse(8000));
+            assert!(out.left.iter().all(|v| v.is_finite()));
+            // 残響が立ち上がってエネルギーを持つ。
+            assert!(energy(&out.left, 0, 8000) > 0.0);
+        }
+    }
+
+    #[test]
+    fn zero_pre_delay_has_no_extra_latency() {
+        // pre_delay_ms=0 では遅延線を挟まないので、オンセットは最短コム遅延付近
+        // （44100 基準 1116 サンプルを 48k へスケールした ~1215）に現れる。
+        let out = create_reverb(FS, rev(|p| p.pre_delay_ms = 0.0))
+            .process_block(&impulse(4000), &impulse(4000));
+        let onset = first_audible(&out.left, 1e-4);
+        assert!((1000..1300).contains(&onset), "onset was {onset}");
+    }
+
+    #[test]
+    fn decay_seconds_is_monotonic_in_room_size() {
+        let mut prev = 0.0;
+        for rs in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let d = reverb_decay_seconds(rs);
+            assert!(d > prev);
+            prev = d;
+        }
+    }
 }

@@ -29,6 +29,8 @@ jobs:
         run: cargo test -p midi2otomad-core
       - name: Clippy (ui / wasm)
         run: cargo clippy -p midi2otomad-ui --target wasm32-unknown-unknown -- -D warnings
+      - name: Test (ui / host)
+        run: cargo test -p midi2otomad-ui
 
   app:
     name: Tauri app — Linux build
@@ -53,5 +55,7 @@ jobs:
         run: trunk build
       - name: Clippy (tauri backend)
         run: cargo clippy -p midi2otomad -- -D warnings
+      - name: Test (tauri backend)
+        run: cargo test -p midi2otomad
       - name: Build app
         run: cargo build -p midi2otomad --release
