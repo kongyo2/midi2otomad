@@ -118,6 +118,29 @@ describe("midiToProject", () => {
     expect(result.project.tracks[0]!.reverbSend).toBe(0.6);
   });
 
+  it("preserves per-track polyphony across a re-import", () => {
+    const previous: Project = parseProject({
+      version: 1,
+      name: "prev",
+      tracks: [
+        {
+          id: "old",
+          name: "lead",
+          midiIndex: 0,
+          polyphony: { maxVoices: 3, priority: "oldest", stopMode: "pitch" },
+          notes: [],
+        },
+      ],
+    });
+
+    const midi = new Midi();
+    const track = midi.addTrack();
+    track.addNote({ midi: 60, time: 0, duration: 0.5, velocity: 0.8 });
+
+    const result = midiToProject(bytesOf(midi), "again.mid", previous);
+    expect(result.project.tracks[0]!.polyphony).toEqual({ maxVoices: 3, priority: "oldest", stopMode: "pitch" });
+  });
+
   it("preserves per-track sends by MIDI position when a track gains notes on re-import", () => {
     const first = new Midi();
     first.addTrack().name = "drums";
