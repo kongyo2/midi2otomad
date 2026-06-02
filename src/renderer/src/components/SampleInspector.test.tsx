@@ -48,25 +48,132 @@ describe("SampleInspector", () => {
     expect(screen.getByText(/ライブラリから音声素材を選択/)).toBeInTheDocument();
   });
 
-  it("edits the sample fields", () => {
+  it("edits the name", () => {
     const value = withSample();
     holder.value = value;
     render(<SampleInspector />);
-
     fireEvent.change(screen.getByDisplayValue("Kick"), { target: { value: "Boom" } });
     expect(value.updateSample).toHaveBeenCalledWith("s1", { name: "Boom" });
+  });
 
-    const sliders = screen.getAllByRole("slider");
-    fireEvent.change(sliders[0]!, { target: { value: "48" } });
+  it("edits base pitch, tune and gain", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("基準ピッチ"), { target: { value: "48" } });
     expect(value.updateSample).toHaveBeenCalledWith("s1", { basePitch: 48 });
-    fireEvent.change(sliders[1]!, { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("微調整"), { target: { value: "20" } });
     expect(value.updateSample).toHaveBeenCalledWith("s1", { tuneCents: 20 });
-    fireEvent.change(sliders[2]!, { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("ゲイン"), { target: { value: "2" } });
     expect(value.updateSample).toHaveBeenCalledWith("s1", { gain: 2 });
-    fireEvent.change(sliders[3]!, { target: { value: "10" } });
-    expect(value.updateSample).toHaveBeenCalledWith("s1", { envelope: { attackMs: 10, releaseMs: 90 } });
-    fireEvent.change(sliders[4]!, { target: { value: "200" } });
-    expect(value.updateSample).toHaveBeenCalledWith("s1", { envelope: { attackMs: 4, releaseMs: 200 } });
+  });
+
+  it("switches the interpolation mode", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("補間方式"), { target: { value: "linear" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", { interpolation: "linear" });
+  });
+
+  it("edits the envelope stages while preserving the others", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("アタック"), { target: { value: "10" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      envelope: expect.objectContaining({ attackMs: 10, releaseMs: 90, sustain: 1 }),
+    });
+    fireEvent.change(screen.getByLabelText("サステイン"), { target: { value: "0.4" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      envelope: expect.objectContaining({ sustain: 0.4, attackMs: 4 }),
+    });
+    fireEvent.change(screen.getByLabelText("ディケイ"), { target: { value: "120" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      envelope: expect.objectContaining({ decayMs: 120 }),
+    });
+  });
+
+  it("edits an envelope curve", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("アタックカーブ"), { target: { value: "3" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      envelope: expect.objectContaining({ attackCurve: 3 }),
+    });
+  });
+
+  it("toggles and configures the timbre filter", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.click(screen.getByLabelText("フィルター"));
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ enabled: true }),
+    });
+    fireEvent.change(screen.getByLabelText("フィルタータイプ"), { target: { value: "highpass" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ type: "highpass" }),
+    });
+    fireEvent.change(screen.getByLabelText("カットオフ"), { target: { value: "1200" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ cutoffHz: 1200 }),
+    });
+    fireEvent.change(screen.getByLabelText("レゾナンス"), { target: { value: "4" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ q: 4 }),
+    });
+  });
+
+  it("modulates the filter cutoff with an envelope and an LFO", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("フィルターEG"), { target: { value: "3" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ envAmount: 3 }),
+    });
+    fireEvent.change(screen.getByLabelText("フィルターLFO深さ"), { target: { value: "2" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ lfoDepth: 2 }),
+    });
+    fireEvent.change(screen.getByLabelText("フィルターLFO波形"), { target: { value: "square" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      filter: expect.objectContaining({ lfoShape: "square" }),
+    });
+  });
+
+  it("configures pitch glide and vibrato", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("グライド量"), { target: { value: "-12" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ glideSemitones: -12 }),
+    });
+    fireEvent.change(screen.getByLabelText("ビブラート深さ"), { target: { value: "40" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ vibratoCents: 40 }),
+    });
+    fireEvent.change(screen.getByLabelText("ビブラート波形"), { target: { value: "triangle" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ vibratoShape: "triangle" }),
+    });
+  });
+
+  it("exposes the glide curve and vibrato fade controls", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.change(screen.getByLabelText("グライドカーブ"), { target: { value: "2" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ glideCurve: 2 }),
+    });
+    fireEvent.change(screen.getByLabelText("ビブラートフェード"), { target: { value: "300" } });
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ vibratoFadeMs: 300 }),
+    });
   });
 
   it("previews when decoded audio is available", () => {
@@ -93,7 +200,7 @@ describe("SampleInspector", () => {
     holder.value = value;
     render(<SampleInspector />);
 
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /ループ/ }));
     expect(value.updateSample).toHaveBeenCalledWith("s1", {
       loop: { enabled: false, startSec: 0.1, endSec: 0.5 },
     });

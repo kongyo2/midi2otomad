@@ -1,28 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { Sample } from "../../../shared/schemas/project";
+import { SampleSchema } from "../../../shared/schemas/project";
 import type { PcmAudio } from "../../../shared/audio/mixer";
 
 const ctx = vi.hoisted(() => {
-  const makeSource = () => ({
-    buffer: null as unknown,
-    playbackRate: { value: 0 },
-    loop: false,
-    loopStart: 0,
-    loopEnd: 0,
-    connect: vi.fn(),
-    start: vi.fn(),
-    stop: vi.fn(),
-  });
-  const makeGain = () => ({
-    gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
-    connect: vi.fn(),
-  });
+  const makeSource = () => ({ buffer: null as unknown, connect: vi.fn(), start: vi.fn() });
   return {
-    currentTime: 10,
+    sampleRate: 8000,
     destination: { id: "destination" },
-    createBuffer: vi.fn(() => ({ copyToChannel: vi.fn() })),
+    createBuffer: vi.fn((_channels: number, _frames: number, _rate: number) => ({ copyToChannel: vi.fn() })),
     createBufferSource: vi.fn(makeSource),
-    createGain: vi.fn(makeGain),
   };
 });
 
@@ -30,26 +16,37 @@ vi.mock("./context", () => ({ getAudioContext: () => ctx, resumeAudioContext: vi
 
 import { previewSample } from "./preview";
 
-function sample(over: Partial<Sample> = {}): Sample {
-  return {
-    id: "s1",
-    name: "s",
-    fileName: "",
-    basePitch: 60,
-    tuneCents: 0,
-    gain: 0.8,
-    durationSec: 1,
-    loop: { enabled: false, startSec: 0, endSec: 0 },
-    envelope: { attackMs: 5, releaseMs: 120 },
-    ...over,
-  };
+function sample(over: Record<string, unknown> = {}): ReturnType<typeof SampleSchema.parse> {
+  return SampleSchema.parse({ id: "s1", name: "s", basePitch: 60, gain: 1, durationSec: 1, ...over });
 }
 
-const pcm: PcmAudio = { sampleRate: 1000, channels: [new Float32Array(1000), new Float32Array(1000)], frames: 1000 };
+function rampPcm(frames = 1000): PcmAudio {
+  const ch = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    ch[i] = (i % 200) / 200;
+  }
+  return { sampleRate: 1000, channels: [ch], frames };
+}
 
-function lastSource(): ReturnType<typeof ctx.createBufferSource> {
-  const results = ctx.createBufferSource.mock.results;
-  return results[results.length - 1]!.value;
+function brightPcm(frames = 1000): PcmAudio {
+  const ch = new Float32Array(frames);
+  for (let i = 0; i < frames; i += 1) {
+    ch[i] = Math.floor(i / 2) % 2 === 0 ? 1 : -1;
+  }
+  return { sampleRate: 1000, channels: [ch], frames };
+}
+
+function lastLeft(): Float32Array {
+  const buffer = ctx.createBuffer.mock.results.at(-1)!.value;
+  return buffer.copyToChannel.mock.calls[0]![0] as Float32Array;
+}
+
+function peakOf(data: Float32Array): number {
+  let peak = 0;
+  for (const value of data) {
+    peak = Math.max(peak, Math.abs(value));
+  }
+  return peak;
 }
 
 beforeEach(() => {
@@ -57,31 +54,48 @@ beforeEach(() => {
 });
 
 describe("previewSample", () => {
-  it("plays a looped one-shot at an explicit pitch", () => {
-    previewSample(pcm, sample({ loop: { enabled: true, startSec: 0.1, endSec: 0.5 } }), 72);
-    expect(ctx.createBuffer).toHaveBeenCalledWith(2, 1000, 1000);
-    const source = lastSource();
-    expect(source.loop).toBe(true);
-    expect(source.loopStart).toBe(0.1);
-    expect(source.loopEnd).toBe(0.5);
-    expect(source.playbackRate.value).toBeCloseTo(2, 9);
-    expect(source.start).toHaveBeenCalledWith(10);
-    expect(source.stop).toHaveBeenCalled();
+  it("renders the sample through the engine into a stereo buffer and plays it", () => {
+    previewSample(rampPcm(), sample());
+    const call = ctx.createBuffer.mock.calls.at(-1)!;
+    expect(call[0]).toBe(2);
+    expect(call[1]).toBeGreaterThan(0);
+    expect(call[2]).toBe(ctx.sampleRate);
+    const buffer = ctx.createBuffer.mock.results.at(-1)!.value;
+    expect(buffer.copyToChannel).toHaveBeenCalledTimes(2);
+    expect(peakOf(lastLeft())).toBeGreaterThan(0);
+    const source = ctx.createBufferSource.mock.results.at(-1)!.value;
+    expect(source.connect).toHaveBeenCalledWith(ctx.destination);
+    expect(source.start).toHaveBeenCalled();
   });
 
-  it("loops over the full sample when the loop end is not past the start", () => {
-    previewSample(pcm, sample({ loop: { enabled: true, startSec: 0.5, endSec: 0.1 } }));
-    const source = lastSource();
-    expect(source.loop).toBe(true);
-    expect(source.loopEnd).toBe(1);
-    expect(source.playbackRate.value).toBeCloseTo(1, 9);
+  it("auditions the requested pitch rather than the base pitch", () => {
+    previewSample(rampPcm(), sample(), 60);
+    const atBase = Float32Array.from(lastLeft());
+    previewSample(rampPcm(), sample(), 72);
+    const anOctaveUp = lastLeft();
+    let differs = false;
+    for (let i = 0; i < Math.min(atBase.length, anOctaveUp.length); i += 1) {
+      if (Math.abs(atBase[i]! - anOctaveUp[i]!) > 1e-4) {
+        differs = true;
+        break;
+      }
+    }
+    expect(differs).toBe(true);
   });
 
-  it("plays a non-looping sample at its base pitch", () => {
-    previewSample(pcm, sample({ loop: { enabled: false, startSec: 0, endSec: 0 } }));
-    const source = lastSource();
-    expect(source.loop).toBe(false);
-    expect(source.start).toHaveBeenCalledWith(10);
-    expect(source.connect).toHaveBeenCalled();
+  it("plays a longer audition for a looped sample", () => {
+    previewSample(brightPcm(), sample({ loop: { enabled: false, startSec: 0, endSec: 0 } }));
+    const dryFrames = ctx.createBuffer.mock.calls.at(-1)![1];
+    previewSample(brightPcm(), sample({ loop: { enabled: true, startSec: 0, endSec: 0.5 } }));
+    const loopFrames = ctx.createBuffer.mock.calls.at(-1)![1];
+    expect(loopFrames).toBeGreaterThan(dryFrames);
+  });
+
+  it("applies the sample filter so the preview matches the mix", () => {
+    previewSample(brightPcm(), sample());
+    const openPeak = peakOf(lastLeft());
+    previewSample(brightPcm(), sample({ filter: { enabled: true, type: "lowpass", cutoffHz: 200 } }));
+    const filteredPeak = peakOf(lastLeft());
+    expect(filteredPeak).toBeLessThan(openPeak);
   });
 });

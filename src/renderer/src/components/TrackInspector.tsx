@@ -105,6 +105,22 @@ export function TrackInspector(): React.JSX.Element {
         </label>
       </div>
 
+      <label className="field">
+        <span className="field__label">
+          リバーブ送り <em>{Math.round(track.reverbSend * 100)}%</em>
+        </span>
+        <input
+          className="range"
+          type="range"
+          aria-label="リバーブ送り"
+          min={0}
+          max={1}
+          step={0.01}
+          value={track.reverbSend}
+          onChange={(event) => updateTrack(track.id, { reverbSend: Number(event.target.value) })}
+        />
+      </label>
+
       <p className="hintline">
         {hasExpression
           ? "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"

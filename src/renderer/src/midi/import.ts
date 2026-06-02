@@ -30,22 +30,28 @@ export interface MidiImportResult {
 }
 
 /**
- * Parse a MIDI file into a project. The existing sample library, master gain and
- * sample rate are preserved so a user can re-import arrangements without losing
- * their material assignments setup.
+ * Parse a MIDI file into a project. The existing sample library, master gain,
+ * sample rate and reverb bus are preserved so a user can re-import arrangements
+ * without losing their material assignments and mix setup.
  */
 export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Project): MidiImportResult {
   const midi = new Midi(bytes);
   const header = midi.header;
   const previousSamples = previous?.samples ?? [];
   const fallbackSampleId = previousSamples[0]?.id ?? null;
+  const previousSends = new Map<number, number>();
+  for (const track of previous?.tracks ?? []) {
+    if (track.midiIndex !== undefined) {
+      previousSends.set(track.midiIndex, track.reverbSend);
+    }
+  }
 
-  let colorIndex = 0;
   let noteCount = 0;
 
   const tracks = midi.tracks
-    .filter((track) => track.notes.length > 0)
-    .map((track, index) => {
+    .map((track, midiIndex) => ({ track, midiIndex }))
+    .filter(({ track }) => track.notes.length > 0)
+    .map(({ track, midiIndex }, index) => {
       const notes = track.notes.map((note) => {
         noteCount += 1;
         return {
@@ -62,14 +68,13 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         v: clamp01(cc.value),
       }));
 
-      const color = TRACK_PALETTE[colorIndex % TRACK_PALETTE.length]!;
-      colorIndex += 1;
+      const color = TRACK_PALETTE[index % TRACK_PALETTE.length]!;
       const name = track.name.trim() !== "" ? track.name.trim() : `Track ${index + 1}`;
 
       return {
         id: makeId("track"),
         name,
-        midiIndex: index,
+        midiIndex,
         color,
         muted: false,
         solo: false,
@@ -79,6 +84,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         noteSampleMap: {},
         notes,
         dynamics: { volume, expression },
+        reverbSend: previousSends.get(midiIndex) ?? 0,
       };
     });
 
@@ -94,6 +100,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
     ppq: header.ppq,
     sampleRate: previous?.sampleRate ?? 48000,
     masterGain: previous?.masterGain ?? 1,
+    reverb: previous?.reverb,
     tempos,
     samples: previousSamples,
     tracks,

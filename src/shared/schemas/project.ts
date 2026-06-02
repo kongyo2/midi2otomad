@@ -3,9 +3,56 @@ import { z } from "zod";
 export const DEFAULT_BASE_PITCH = 60;
 export const DEFAULT_SAMPLE_RATE = 48000;
 
+export const FILTER_TYPES = [
+  "lowpass",
+  "highpass",
+  "bandpass",
+  "notch",
+  "peaking",
+  "lowshelf",
+  "highshelf",
+  "allpass",
+] as const;
+
+export const LFO_SHAPES = ["sine", "triangle", "square", "saw"] as const;
+
+export const INTERPOLATION_MODES = ["linear", "hermite"] as const;
+
+const CURVE = z.number().min(-8).max(8).default(0);
+
 export const EnvelopeSchema = z.object({
+  delayMs: z.number().min(0).max(5000).default(0),
   attackMs: z.number().min(0).max(5000).default(4),
+  attackCurve: CURVE,
+  holdMs: z.number().min(0).max(5000).default(0),
+  decayMs: z.number().min(0).max(20000).default(0),
+  decayCurve: CURVE,
+  sustain: z.number().min(0).max(1).default(1),
   releaseMs: z.number().min(0).max(20000).default(90),
+  releaseCurve: CURVE,
+});
+
+export const FilterSchema = z.object({
+  enabled: z.boolean().default(false),
+  type: z.enum(FILTER_TYPES).default("lowpass"),
+  cutoffHz: z.number().min(20).max(20000).default(20000),
+  q: z.number().min(0.1).max(24).default(0.707),
+  gainDb: z.number().min(-24).max(24).default(0),
+  envAmount: z.number().min(-8).max(8).default(0),
+  lfoHz: z.number().min(0).max(16).default(5),
+  lfoDepth: z.number().min(0).max(8).default(0),
+  lfoShape: z.enum(LFO_SHAPES).default("sine"),
+});
+
+export const PitchModSchema = z.object({
+  glideSemitones: z.number().min(-48).max(48).default(0),
+  glideMs: z.number().min(0).max(5000).default(0),
+  glideCurve: CURVE,
+  vibratoCents: z.number().min(0).max(1200).default(0),
+  vibratoHz: z.number().min(0).max(20).default(5),
+  vibratoDelayMs: z.number().min(0).max(5000).default(0),
+  vibratoFadeMs: z.number().min(0).max(5000).default(0),
+  vibratoShape: z.enum(LFO_SHAPES).default("sine"),
 });
 
 export const LoopSchema = z.object({
@@ -22,8 +69,21 @@ export const SampleSchema = z.object({
   tuneCents: z.number().min(-2400).max(2400).default(0),
   gain: z.number().min(0).max(4).default(1),
   durationSec: z.number().min(0).default(0),
+  interpolation: z.enum(INTERPOLATION_MODES).default("hermite"),
   loop: LoopSchema.default({ enabled: false, startSec: 0, endSec: 0 }),
-  envelope: EnvelopeSchema.default({ attackMs: 4, releaseMs: 90 }),
+  envelope: EnvelopeSchema.prefault({}),
+  filter: FilterSchema.prefault({}),
+  pitchMod: PitchModSchema.prefault({}),
+});
+
+export const ReverbSchema = z.object({
+  enabled: z.boolean().default(false),
+  roomSize: z.number().min(0).max(1).default(0.5),
+  damping: z.number().min(0).max(1).default(0.5),
+  width: z.number().min(0).max(1).default(1),
+  wet: z.number().min(0).max(1).default(0.25),
+  dry: z.number().min(0).max(1).default(1),
+  preDelayMs: z.number().min(0).max(500).default(0),
 });
 
 export const NoteSchema = z.object({
@@ -56,6 +116,7 @@ export const TrackSchema = z.object({
   noteSampleMap: z.record(z.string(), z.string()).default({}),
   notes: z.array(NoteSchema).default([]),
   dynamics: TrackDynamicsSchema.default({ volume: [], expression: [] }),
+  reverbSend: z.number().min(0).max(1).default(0),
 });
 
 export const TempoSchema = z.object({
@@ -73,9 +134,16 @@ export const ProjectSchema = z.object({
   tempos: z.array(TempoSchema).default([]),
   samples: z.array(SampleSchema).default([]),
   tracks: z.array(TrackSchema).default([]),
+  reverb: ReverbSchema.prefault({}),
 });
 
 export type Envelope = z.infer<typeof EnvelopeSchema>;
+export type Filter = z.infer<typeof FilterSchema>;
+export type FilterType = (typeof FILTER_TYPES)[number];
+export type LfoShape = (typeof LFO_SHAPES)[number];
+export type InterpolationMode = (typeof INTERPOLATION_MODES)[number];
+export type PitchMod = z.infer<typeof PitchModSchema>;
+export type Reverb = z.infer<typeof ReverbSchema>;
 export type Loop = z.infer<typeof LoopSchema>;
 export type Sample = z.infer<typeof SampleSchema>;
 export type Note = z.infer<typeof NoteSchema>;
@@ -87,6 +155,10 @@ export type Project = z.infer<typeof ProjectSchema>;
 
 export function parseProject(raw: unknown): Project {
   return ProjectSchema.parse(raw);
+}
+
+export function createSample(input: { id: string; name: string } & Partial<Sample>): Sample {
+  return SampleSchema.parse(input);
 }
 
 export function createEmptyProject(name = "Untitled 音MAD"): Project {

@@ -81,6 +81,7 @@ describe("midiToProject", () => {
       bpm: 100,
       sampleRate: 44100,
       masterGain: 0.5,
+      reverb: { enabled: true, roomSize: 0.9, wet: 0.4 },
       samples: [{ id: "kept", name: "snare" }],
       tracks: [],
     });
@@ -92,9 +93,55 @@ describe("midiToProject", () => {
     const result = midiToProject(bytesOf(midi), "reimport.mid", previous);
     expect(result.project.sampleRate).toBe(44100);
     expect(result.project.masterGain).toBe(0.5);
+    expect(result.project.reverb).toEqual(previous.reverb);
     expect(result.project.samples).toEqual(previous.samples);
     expect(result.project.tracks[0]!.defaultSampleId).toBe("kept");
     expect(result.project.bpm).toBe(100);
+  });
+
+  it("preserves per-track reverb sends across a re-import", () => {
+    const previous: Project = parseProject({
+      version: 1,
+      name: "prev",
+      reverb: { enabled: true, wet: 0.5 },
+      tracks: [
+        { id: "old", name: "lead", midiIndex: 0, reverbSend: 0.6, notes: [] },
+        { id: "manual", name: "no-midi", reverbSend: 0.9, notes: [] },
+      ],
+    });
+
+    const midi = new Midi();
+    const track = midi.addTrack();
+    track.addNote({ midi: 60, time: 0, duration: 0.5, velocity: 0.8 });
+
+    const result = midiToProject(bytesOf(midi), "again.mid", previous);
+    expect(result.project.tracks[0]!.reverbSend).toBe(0.6);
+  });
+
+  it("preserves per-track sends by MIDI position when a track gains notes on re-import", () => {
+    const first = new Midi();
+    first.addTrack().name = "drums";
+    const bass1 = first.addTrack();
+    bass1.name = "bass";
+    bass1.addNote({ midi: 36, time: 0, duration: 0.5, velocity: 0.8 });
+
+    const p1 = midiToProject(bytesOf(first), "song.mid").project;
+    expect(p1.tracks).toHaveLength(1);
+    p1.tracks[0]!.reverbSend = 0.7;
+
+    const second = new Midi();
+    const drums2 = second.addTrack();
+    drums2.name = "drums";
+    drums2.addNote({ midi: 38, time: 0, duration: 0.25, velocity: 0.9 });
+    const bass2 = second.addTrack();
+    bass2.name = "bass";
+    bass2.addNote({ midi: 36, time: 0, duration: 0.5, velocity: 0.8 });
+
+    const p2 = midiToProject(bytesOf(second), "song.mid", p1).project;
+    const bass = p2.tracks.find((t) => t.name === "bass")!;
+    const drums = p2.tracks.find((t) => t.name === "drums")!;
+    expect(bass.reverbSend).toBe(0.7);
+    expect(drums.reverbSend).toBe(0);
   });
 
   it("falls back to the default tempo without a header tempo or previous project", () => {

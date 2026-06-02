@@ -38,8 +38,40 @@ describe("parseProject", () => {
       tuneCents: 0,
       gain: 1,
       durationSec: 0,
+      interpolation: "hermite",
       loop: { enabled: false, startSec: 0, endSec: 0 },
-      envelope: { attackMs: 4, releaseMs: 90 },
+      envelope: {
+        delayMs: 0,
+        attackMs: 4,
+        attackCurve: 0,
+        holdMs: 0,
+        decayMs: 0,
+        decayCurve: 0,
+        sustain: 1,
+        releaseMs: 90,
+        releaseCurve: 0,
+      },
+      filter: {
+        enabled: false,
+        type: "lowpass",
+        cutoffHz: 20000,
+        q: 0.707,
+        gainDb: 0,
+        envAmount: 0,
+        lfoHz: 5,
+        lfoDepth: 0,
+        lfoShape: "sine",
+      },
+      pitchMod: {
+        glideSemitones: 0,
+        glideMs: 0,
+        glideCurve: 0,
+        vibratoCents: 0,
+        vibratoHz: 5,
+        vibratoDelayMs: 0,
+        vibratoFadeMs: 0,
+        vibratoShape: "sine",
+      },
     });
   });
 
@@ -135,6 +167,111 @@ describe("parseProject", () => {
         version: 1,
         name: "x",
         tracks: [{ id: "t1", name: "t", notes: [{ pitch: 200, startSec: 0, durationSec: 1 }] }],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("extended synthesis schema", () => {
+  it("defaults the track reverb send to zero", () => {
+    const project = parseProject({
+      version: 1,
+      name: "T",
+      tracks: [{ id: "t1", name: "lead" }],
+    });
+    expect(project.tracks[0]!.reverbSend).toBe(0);
+  });
+
+  it("defaults the project reverb bus to a disabled hall", () => {
+    const project = parseProject({ version: 1, name: "R" });
+    expect(project.reverb).toEqual({
+      enabled: false,
+      roomSize: 0.5,
+      damping: 0.5,
+      width: 1,
+      wet: 0.25,
+      dry: 1,
+      preDelayMs: 0,
+    });
+  });
+
+  it("preserves a fully specified envelope, filter and pitch modulation", () => {
+    const project = parseProject({
+      version: 1,
+      name: "Synth",
+      samples: [
+        {
+          id: "s1",
+          name: "voice",
+          interpolation: "linear",
+          envelope: {
+            delayMs: 5,
+            attackMs: 10,
+            attackCurve: 2,
+            holdMs: 20,
+            decayMs: 40,
+            decayCurve: -1,
+            sustain: 0.6,
+            releaseMs: 200,
+            releaseCurve: 3,
+          },
+          filter: { enabled: true, type: "bandpass", cutoffHz: 800, q: 4, gainDb: 6 },
+          pitchMod: {
+            glideSemitones: -12,
+            glideMs: 80,
+            glideCurve: 1,
+            vibratoCents: 50,
+            vibratoHz: 6,
+            vibratoDelayMs: 100,
+            vibratoFadeMs: 150,
+            vibratoShape: "triangle",
+          },
+        },
+      ],
+    });
+    const sample = project.samples[0]!;
+    expect(sample.interpolation).toBe("linear");
+    expect(sample.envelope.sustain).toBe(0.6);
+    expect(sample.filter).toEqual({
+      enabled: true,
+      type: "bandpass",
+      cutoffHz: 800,
+      q: 4,
+      gainDb: 6,
+      envAmount: 0,
+      lfoHz: 5,
+      lfoDepth: 0,
+      lfoShape: "sine",
+    });
+    expect(sample.pitchMod.vibratoShape).toBe("triangle");
+  });
+
+  it("rejects a sustain level above one", () => {
+    expect(() =>
+      parseProject({
+        version: 1,
+        name: "x",
+        samples: [{ id: "s1", name: "s", envelope: { sustain: 1.5 } }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an unknown filter type", () => {
+    expect(() =>
+      parseProject({
+        version: 1,
+        name: "x",
+        samples: [{ id: "s1", name: "s", filter: { type: "comb" } }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a reverb send outside the unit range", () => {
+    expect(() =>
+      parseProject({
+        version: 1,
+        name: "x",
+        tracks: [{ id: "t1", name: "t", reverbSend: 2 }],
       }),
     ).toThrow();
   });

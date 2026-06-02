@@ -75,6 +75,14 @@ describe("TrackInspector", () => {
     expect(value.updateTrack).toHaveBeenCalledWith("t1", { pan: 0.5 });
   });
 
+  it("edits the reverb send amount", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.change(screen.getByLabelText("リバーブ送り"), { target: { value: "0.5" } });
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", { reverbSend: 0.5 });
+  });
+
   it("renders pan labels for center, left and right", () => {
     holder.value = makeStudioValue({ project: projectWithTrack({ pan: 0 }), selectedTrackId: "t1" });
     const { rerender } = render(<TrackInspector />);

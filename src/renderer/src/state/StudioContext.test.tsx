@@ -104,6 +104,15 @@ describe("projectReducer", () => {
     expect(projectReducer(base, { type: "patchProject", patch: { bpm: 99 } }).bpm).toBe(99);
   });
 
+  it("patches the master reverb bus", () => {
+    const next = projectReducer(base, {
+      type: "patchProject",
+      patch: { reverb: { ...base.reverb, enabled: true, roomSize: 0.9 } },
+    });
+    expect(next.reverb.enabled).toBe(true);
+    expect(next.reverb.roomSize).toBe(0.9);
+  });
+
   it("adds a sample and optionally assigns it to unassigned tracks", () => {
     const assigned = projectReducer(base, { type: "addSample", sample, assignToTracks: true });
     expect(assigned.samples).toHaveLength(3);
@@ -301,6 +310,30 @@ describe("StudioProvider state", () => {
     });
     expect(result.current.project.name).toBe("renamed");
     expect(result.current.project.bpm).toBe(90);
+  });
+
+  it("re-renders the mix when master gain or the reverb bus change", () => {
+    const { result } = renderStudio();
+    act(() => {
+      result.current.play();
+    });
+    expect(mocks.mixProject).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.patchProject({ masterGain: 0.5 });
+    });
+    act(() => {
+      result.current.play();
+    });
+    expect(mocks.mixProject).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      result.current.patchProject({ reverb: { ...result.current.project.reverb, enabled: true } });
+    });
+    act(() => {
+      result.current.play();
+    });
+    expect(mocks.mixProject).toHaveBeenCalledTimes(3);
   });
 
   it("clears the selected sample when it is removed", async () => {

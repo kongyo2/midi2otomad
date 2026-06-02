@@ -4,8 +4,8 @@ import {
   type Project,
   type Sample,
   type Track,
-  DEFAULT_BASE_PITCH,
   createEmptyProject,
+  createSample,
 } from "../../../shared/schemas/project";
 import { type AudioBank, type PcmAudio, mixProject } from "../../../shared/audio/mixer";
 import type { BounceResponse, ExportFormat, LoadedFile, WavBitDepth } from "../../../shared/media";
@@ -16,7 +16,7 @@ import { midiToProject } from "../midi/import";
 
 type Action =
   | { type: "setProject"; project: Project }
-  | { type: "patchProject"; patch: Partial<Pick<Project, "name" | "bpm" | "masterGain">> }
+  | { type: "patchProject"; patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb">> }
   | { type: "addSample"; sample: Sample; assignToTracks: boolean }
   | { type: "updateSample"; id: string; patch: Partial<Sample> }
   | { type: "removeSample"; id: string }
@@ -103,7 +103,7 @@ export interface StudioContextValue {
   ingestAudio: (files: Array<LoadedFile | File>, assignTrackId?: string) => Promise<void>;
   updateSample: (id: string, patch: Partial<Sample>) => void;
   removeSample: (id: string) => void;
-  patchProject: (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain">>) => void;
+  patchProject: (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb">>) => void;
   updateTrack: (id: string, patch: Partial<Track>) => void;
   setNoteSample: (trackId: string, note: number, sampleId: string | null) => void;
   getAudio: (sampleId: string) => PcmAudio | undefined;
@@ -210,17 +210,13 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
           peaksRef.current.set(id, buildWaveformPeaks(pcm));
           const durationSec = pcm.frames / pcm.sampleRate;
           const isFirstSampleEver = projectRef.current.samples.length === 0 && firstId === null;
-          const sample: Sample = {
+          const sample = createSample({
             id,
             name: name.replace(/\.[^.]+$/, ""),
             fileName: name,
-            basePitch: DEFAULT_BASE_PITCH,
-            tuneCents: 0,
-            gain: 1,
             durationSec,
             loop: { enabled: false, startSec: 0, endSec: durationSec },
-            envelope: { attackMs: 4, releaseMs: 90 },
-          };
+          });
           dispatch({ type: "addSample", sample, assignToTracks: isFirstSampleEver });
           markDirty();
           if (firstId === null) {
@@ -264,9 +260,9 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
   );
 
   const patchProject = useCallback(
-    (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain">>) => {
+    (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb">>) => {
       dispatch({ type: "patchProject", patch });
-      if (patch.bpm !== undefined || patch.masterGain !== undefined) {
+      if (patch.bpm !== undefined || patch.masterGain !== undefined || patch.reverb !== undefined) {
         markDirty();
       }
     },
