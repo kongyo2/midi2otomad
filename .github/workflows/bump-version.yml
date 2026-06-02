@@ -1,0 +1,69 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semver bump type
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        description: Explicit version (e.g. 1.2.3) — overrides the bump type when set
+        type: string
+        required: false
+
+concurrency:
+  group: bump-version-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+          CUSTOM_VERSION: ${{ inputs.custom_version }}
+        run: |
+          if [ -n "${CUSTOM_VERSION}" ]; then
+            target="${CUSTOM_VERSION}"
+          else
+            target="${BUMP}"
+          fi
+          new_version="$(npm version "${target}" --message 'chore: bump version to %s')"
+          echo "version=${new_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Push commit and tag
+        env:
+          BRANCH: ${{ github.ref_name }}
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git push origin HEAD:"${BRANCH}"
+          git push origin "${NEW_VERSION}"
+
+      - name: Summary
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        run: echo "Bumped version to **${NEW_VERSION}**" >> "${GITHUB_STEP_SUMMARY}"
