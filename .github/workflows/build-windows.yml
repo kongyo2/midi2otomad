@@ -25,12 +25,17 @@ jobs:
       - name: Install trunk and the Tauri CLI
         run: cargo install --locked trunk tauri-cli
 
-      - name: Build Tauri app
+      - name: Build Tauri app and publish to GitHub Releases
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: cargo tauri
+          tagName: v__VERSION__
+          releaseName: midi2otomad v__VERSION__
+          releaseBody: Windows installer for midi2otomad. Download the .exe (NSIS) or .msi asset below to install.
+          releaseDraft: false
+          prerelease: false
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
