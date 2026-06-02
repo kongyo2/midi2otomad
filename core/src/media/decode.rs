@@ -53,11 +53,7 @@ pub fn decode_audio(bytes: &[u8]) -> Result<PcmAudio, String> {
                 let mut sb = SampleBuffer::<f32>::new(audio_buf.capacity() as u64, spec);
                 sb.copy_interleaved_ref(audio_buf);
                 let samples = sb.samples();
-                let frames = if num_ch > 0 {
-                    samples.len() / num_ch
-                } else {
-                    0
-                };
+                let frames = samples.len().checked_div(num_ch).unwrap_or(0);
                 for f in 0..frames {
                     for (c, channel) in channels.iter_mut().enumerate().take(num_ch) {
                         channel.push(samples[f * num_ch + c]);
