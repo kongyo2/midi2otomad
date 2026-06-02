@@ -766,6 +766,76 @@ describe("mixProject polyphony", () => {
     ];
     expect(polyMix(notes, { maxVoices: 2 })[600]!).toBeCloseTo(2, 5);
   });
+
+  it("fades a stolen voice quickly instead of dragging its full release tail", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({ id: "long", envelope: { attackMs: 0, releaseMs: 500 } }),
+        sampleRaw({ id: "short", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "long",
+          noteSampleMap: { "64": "short" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 2, velocity: 127 },
+            { pitch: 64, startSec: 0.5, durationSec: 0.1, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "newest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ long: constSource(1, 3000), short: constSource(1, 3000) }), {
+      limiter: false,
+    });
+    expect(mix.left[800]).toBe(0);
+  });
+
+  it("frees a one-shot voice when its sample ends so a later capped note still plays", () => {
+    const project = makeProject({
+      samples: [sampleRaw({ id: "hit", envelope: { attackMs: 0, releaseMs: 0 } })],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "hit",
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 2, velocity: 127 },
+            { pitch: 60, startSec: 1, durationSec: 0.2, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ hit: constSource(1, 200) }), { limiter: false });
+    expect(mix.left[1100]!).toBeGreaterThan(0);
+  });
+
+  it("holds a looping voice for the whole note, so the later capped note is dropped", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({
+          id: "pad",
+          envelope: { attackMs: 0, releaseMs: 0 },
+          loop: { enabled: true, startSec: 0, endSec: 0.2 },
+        }),
+        sampleRaw({ id: "beep", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "pad",
+          noteSampleMap: { "72": "beep" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 2, velocity: 127 },
+            { pitch: 72, startSec: 1, durationSec: 0.5, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ pad: constSource(1, 200), beep: constSource(0.5, 2000) }), {
+      limiter: false,
+    });
+    expect(mix.left[1100]!).toBeCloseTo(1, 5);
+  });
 });
 
 describe("mixProject buffer bounds", () => {

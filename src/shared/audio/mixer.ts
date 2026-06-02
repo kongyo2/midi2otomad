@@ -41,6 +41,15 @@ export interface MixOptions {
 
 const MIN_FRAMES = 1;
 
+/**
+ * Release time, in milliseconds, applied to a voice the allocator cut short
+ * (stolen by the voice cap or choked by a stop group). Long enough to avoid a
+ * click, short enough that the freed slot stops sounding almost immediately —
+ * so the voice cap and stop mode actually limit simultaneous audio rather than
+ * letting the sample's normal release tail ring on.
+ */
+const CHOKE_RELEASE_MS = 5;
+
 export function velocityToGain(velocity: number): number {
   const v = Math.max(0, Math.min(127, velocity)) / 127;
   // Slight curve so soft notes feel softer without losing the loud end.
@@ -294,6 +303,23 @@ function renderNote(
   }
 }
 
+/**
+ * How long a voice actually produces sound, for voice-allocation bookkeeping. A
+ * live loop sustains for the whole MIDI note, but a non-looping one-shot goes
+ * silent once playback runs off the end of the source — so its slot should free
+ * then, rather than being held (and stealing/blocking later notes) for the full
+ * note. Playback speed is approximated by the base pitch ratio, ignoring glide
+ * and vibrato.
+ */
+function audibleDurationSec(note: Note, sample: Sample, src: PcmAudio): number {
+  if (resolveLoop(sample, src) !== null) {
+    return note.durationSec;
+  }
+  const ratio = pitchRatio(note.pitch, sample.basePitch, sample.tuneCents);
+  const oneShotSec = src.frames / src.sampleRate / ratio;
+  return Math.min(note.durationSec, oneShotSec);
+}
+
 /** Resolve a note to its sample and decoded audio, or null when nothing renders. */
 function resolveNoteSource(
   track: Track,
@@ -378,19 +404,22 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
     const voices = track.notes
       .map((note) => ({ note, resolved: resolveNoteSource(track, note, sampleById, bank) }))
       .filter((voice): voice is { note: Note; resolved: { sample: Sample; src: PcmAudio } } => voice.resolved !== null);
-    const allocations = allocateVoices(
-      voices.map(({ note, resolved }) => ({
-        pitch: note.pitch,
-        startSec: note.startSec,
-        durationSec: note.durationSec,
-        sampleId: resolved.sample.id,
-      })),
-      track.polyphony,
-    );
+    const requests = voices.map(({ note, resolved }) => ({
+      pitch: note.pitch,
+      startSec: note.startSec,
+      durationSec: audibleDurationSec(note, resolved.sample, resolved.src),
+      sampleId: resolved.sample.id,
+    }));
+    const allocations = allocateVoices(requests, track.polyphony);
     for (const { index, durationSec } of allocations) {
       const { note, resolved } = voices[index]!;
-      const gated = durationSec === note.durationSec ? note : { ...note, durationSec };
-      renderNote(gated, resolved.sample, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
+      if (durationSec < requests[index]!.durationSec) {
+        const gated = { ...note, durationSec };
+        const choked = { ...resolved.sample, envelope: { ...resolved.sample.envelope, releaseMs: CHOKE_RELEASE_MS } };
+        renderNote(gated, choked, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
+      } else {
+        renderNote(note, resolved.sample, resolved.src, track, trackDyn, buses, outRate, masterGain, pan);
+      }
     }
   }
 
