@@ -402,6 +402,7 @@ body {
 
 .samplelist__item {
   flex: 1;
+  min-width: 0;
   display: flex;
   gap: 10px;
   align-items: center;
@@ -437,6 +438,9 @@ body {
 .samplelist__sub {
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .miniwave {
