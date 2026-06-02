@@ -22,8 +22,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install trunk
-        run: cargo install --locked trunk
+      - name: Install trunk and the Tauri CLI
+        run: cargo install --locked trunk tauri-cli
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

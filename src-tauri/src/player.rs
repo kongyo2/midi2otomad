@@ -213,7 +213,14 @@ where
                                 };
                                 *s = T::from_sample(v);
                             }
-                            shared.pos.store(pos + 1, Ordering::Release);
+                            // seek()/stop() からの位置更新を上書きしないよう、pos が
+                            // 読み取り時のままのときだけ前進させる。
+                            let _ = shared.pos.compare_exchange(
+                                pos,
+                                pos + 1,
+                                Ordering::Release,
+                                Ordering::Relaxed,
+                            );
                         } else {
                             shared.playing.store(false, Ordering::Release);
                             for s in frame.iter_mut() {
