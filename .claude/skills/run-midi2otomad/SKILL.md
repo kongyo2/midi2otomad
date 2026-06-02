@@ -25,7 +25,7 @@ container; the rest is what actually got installed:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y xvfb dbus-x11 imagemagick xdotool
+sudo apt-get install -y xvfb dbus-x11 imagemagick xdotool psmisc
 ```
 
 Building the Tauri backend needs the WebKitGTK dev libs. They were **already
@@ -68,7 +68,9 @@ cargo build -p midi2otomad      # -> target/debug/midi2otomad (~1.5 min cold)
 
 Launches `target/debug/midi2otomad` headless under Xvfb+WebKitGTK and grabs the
 window. A *debug* build loads the dev URL, so the script starts `trunk serve`
-on 1420 itself (what `cargo tauri dev` does) and tears it down after.
+on 1420 itself (what `cargo tauri dev` does) and tears it down after. It **exits
+non-zero** if the dev server never comes up, the app dies before a window
+appears, or the screenshot is blank — so it doubles as an integration smoke.
 
 ```bash
 bash .claude/skills/run-midi2otomad/launch-tauri.sh /tmp/m2o-shots/tauri.png 10
