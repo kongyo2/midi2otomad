@@ -877,6 +877,34 @@ describe("mixProject polyphony", () => {
     const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 6000) }), { limiter: false });
     expect(mix.frames).toBeLessThan(1000);
   });
+
+  it("does not free a pitch-modulated one-shot early, honoring the cap", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({
+          id: "lead",
+          envelope: { attackMs: 0, releaseMs: 0 },
+          pitchMod: { glideSemitones: -5, glideMs: 1000 },
+        }),
+        sampleRaw({ id: "beep", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "lead",
+          noteSampleMap: { "64": "beep" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+            { pitch: 64, startSec: 0.5, durationSec: 0.3, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ lead: constSource(1, 100), beep: constSource(0.5, 2000) }), {
+      limiter: false,
+    });
+    expect(mix.left[600]).toBe(0);
+  });
 });
 
 describe("mixProject buffer bounds", () => {

@@ -298,14 +298,19 @@ function renderNote(
 
 /**
  * How long a voice keeps a slot occupied, for voice-allocation bookkeeping: the
- * note's gate plus its release tail, so the cap counts a still-ringing release
- * as a live voice. A non-looping one-shot is bounded by its playback length,
- * since it goes silent once playback runs off the end of the source. Playback
- * speed is approximated by the base pitch ratio, ignoring glide and vibrato.
+ * note's gate plus its release tail (always an upper bound, since the envelope
+ * silences the voice by then), so the cap counts a still-ringing release as a
+ * live voice. A non-looping one-shot is bounded further by its playback length,
+ * since it goes silent once playback runs off the end of the source — but only
+ * when playback runs at the steady base ratio. Pitch modulation (glide/vibrato)
+ * varies the per-frame read speed, so the source can still be sounding past the
+ * static estimate; rather than integrate that here we fall back to the gate +
+ * release bound, which never frees a voice while it could still be audible.
  */
 function soundingDurationSec(note: Note, sample: Sample, src: PcmAudio): number {
   const gatePlusRelease = note.durationSec + sample.envelope.releaseMs / 1000;
-  if (resolveLoop(sample, src) !== null) {
+  const pitchModulated = sample.pitchMod.glideSemitones !== 0 || sample.pitchMod.vibratoCents !== 0;
+  if (resolveLoop(sample, src) !== null || pitchModulated) {
     return gatePlusRelease;
   }
   const ratio = pitchRatio(note.pitch, sample.basePitch, sample.tuneCents);
