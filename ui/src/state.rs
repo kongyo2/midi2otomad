@@ -234,10 +234,14 @@ impl Studio {
             let seq = this.edit_seq.get_untracked();
             if this.mixed_seq.get_untracked() != seq {
                 let project = this.snapshot();
-                let _ = api::set_mix(&project).await;
-                // レンダリング中に編集が入ると edit_seq が進むため、この世代だけを
-                // 「ミックス済み」として記録し、より新しい編集を取りこぼさない。
-                this.mixed_seq.set(seq);
+                // より新しいレンダリングに追い越されてプロジェクトのミックスが実際には
+                // 再生バッファへ載らなかった場合は「ミックス済み」と記録せず、次の再生で
+                // 再レンダリングさせる。
+                if let Ok(summary) = api::set_mix(&project).await {
+                    if summary.loaded {
+                        this.mixed_seq.set(seq);
+                    }
+                }
             }
             after.await;
         });

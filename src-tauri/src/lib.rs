@@ -101,6 +101,9 @@ pub struct IngestResult {
 pub struct MixSummary {
     duration_sec: f64,
     peak: f64,
+    /// このレンダリングが実際に再生バッファへ載ったか。より新しいレンダリング要求に
+    /// 追い越された場合は false になり、フロントは「ミックス済み」と記録しない。
+    loaded: bool,
 }
 
 #[derive(Serialize)]
@@ -259,6 +262,7 @@ fn preview_sample(
     sample: Sample,
     pitch: Option<i32>,
 ) -> Result<(), String> {
+    let seq = state.next_render_seq();
     let note_pitch = pitch.unwrap_or(sample.base_pitch);
     let duration = {
         let bank = state
@@ -287,7 +291,6 @@ fn preview_sample(
             "notes": [{ "pitch": note_pitch, "startSec": 0, "durationSec": duration, "velocity": 127 }]
         }]
     }))?;
-    let seq = state.next_render_seq();
     let mix = state.render(
         &project,
         MixOptions {
@@ -308,14 +311,15 @@ fn preview_sample(
 fn set_mix(state: State<AppState>, project: Project) -> Result<MixSummary, String> {
     let seq = state.next_render_seq();
     let mix = state.render(&project, MixOptions::default())?;
-    let summary = MixSummary {
-        duration_sec: mix.duration_sec,
-        peak: mix.peak,
-    };
-    if state.is_latest_render(seq) {
+    let loaded = state.is_latest_render(seq);
+    if loaded {
         load_into_player(&state, &mix);
     }
-    Ok(summary)
+    Ok(MixSummary {
+        duration_sec: mix.duration_sec,
+        peak: mix.peak,
+        loaded,
+    })
 }
 
 #[tauri::command]

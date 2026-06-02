@@ -76,6 +76,7 @@ pub struct IngestResult {
 pub struct MixSummary {
     pub duration_sec: f64,
     pub peak: f64,
+    pub loaded: bool,
 }
 
 #[derive(Deserialize, Clone)]
