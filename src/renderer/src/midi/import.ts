@@ -41,10 +41,12 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
   const fallbackSampleId = previousSamples[0]?.id ?? null;
   const previousSends = new Map<number, number>();
   const previousPolyphony = new Map<number, Polyphony>();
+  const previousDynamics = new Map<number, { enabled: boolean; amount: number }>();
   for (const track of previous?.tracks ?? []) {
     if (track.midiIndex !== undefined) {
       previousSends.set(track.midiIndex, track.reverbSend);
       previousPolyphony.set(track.midiIndex, track.polyphony);
+      previousDynamics.set(track.midiIndex, { enabled: track.dynamics.enabled, amount: track.dynamics.amount });
     }
   }
 
@@ -85,7 +87,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         defaultSampleId: fallbackSampleId,
         noteSampleMap: {},
         notes,
-        dynamics: { volume, expression },
+        dynamics: { ...previousDynamics.get(midiIndex), volume, expression },
         reverbSend: previousSends.get(midiIndex) ?? 0,
         polyphony: previousPolyphony.get(midiIndex),
       };

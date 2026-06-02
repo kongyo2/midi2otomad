@@ -316,7 +316,8 @@ function renderNote(
  */
 function soundingDurationSec(note: Note, sample: Sample, src: PcmAudio): number {
   const gatePlusRelease = note.durationSec + sample.envelope.releaseMs / 1000;
-  const pitchModulated = sample.pitchMod.glideSemitones !== 0 || sample.pitchMod.vibratoCents !== 0;
+  const pitchModulated =
+    sample.pitchMod.enabled && (sample.pitchMod.glideSemitones !== 0 || sample.pitchMod.vibratoCents !== 0);
   if (resolveLoop(sample, src) !== null || pitchModulated) {
     return gatePlusRelease;
   }

@@ -644,6 +644,28 @@ describe("mixProject dynamic pitch", () => {
     );
     expect([...disabled.left]).toEqual([...plain.left]);
   });
+
+  it("frees a non-looping one-shot at its true end when the section is disabled", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({
+          envelope: { attackMs: 0, releaseMs: 0 },
+          pitchMod: { enabled: false, glideSemitones: 12, glideMs: 1000 },
+        }),
+      ],
+      tracks: [
+        trackRaw({
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+            { pitch: 60, startSec: 0.5, durationSec: 0.1, velocity: 127 },
+          ],
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 100) }), { limiter: false });
+    expect(tailEnergy(mix.left, 500)).toBeGreaterThan(0);
+  });
 });
 
 describe("mixProject per-sample filter", () => {

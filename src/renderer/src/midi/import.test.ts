@@ -141,6 +141,33 @@ describe("midiToProject", () => {
     expect(result.project.tracks[0]!.polyphony).toEqual({ maxVoices: 3, priority: "oldest", stopMode: "pitch" });
   });
 
+  it("preserves the dynamics enable flag and depth across a re-import while rebuilding the curves", () => {
+    const previous: Project = parseProject({
+      version: 1,
+      name: "prev",
+      tracks: [
+        {
+          id: "old",
+          name: "lead",
+          midiIndex: 0,
+          dynamics: { enabled: false, amount: 0.3, volume: [], expression: [] },
+          notes: [],
+        },
+      ],
+    });
+
+    const midi = new Midi();
+    const track = midi.addTrack();
+    track.addNote({ midi: 60, time: 0, duration: 0.5, velocity: 0.8 });
+    track.addCC({ number: 11, value: 0.5, time: 0 });
+
+    const result = midiToProject(bytesOf(midi), "again.mid", previous);
+    const dynamics = result.project.tracks[0]!.dynamics;
+    expect(dynamics.enabled).toBe(false);
+    expect(dynamics.amount).toBe(0.3);
+    expect(dynamics.expression.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("preserves the output settings across a re-import", () => {
     const previous: Project = parseProject({
       version: 1,
