@@ -14,8 +14,8 @@
 //                          | eval <js> | text <css> | wait <ms> | quit
 //   eval '<js>'            evaluate JS in the page, print JSON result
 import http from "node:http";
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, extname, dirname } from "node:path";
+import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
+import { join, resolve, sep, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -45,8 +45,9 @@ function serveDist() {
   const server = http.createServer((req, res) => {
     let p = decodeURIComponent(req.url.split("?")[0]);
     if (p === "/" || p === "") p = "/index.html";
-    const file = join(DIST, p);
-    if (!existsSync(file)) { res.writeHead(404); res.end(); return; }
+    const file = resolve(DIST, "." + p);
+    if (!file.startsWith(DIST + sep)) { res.writeHead(403); res.end(); return; } // no traversal out of dist
+    if (!existsSync(file) || !statSync(file).isFile()) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream" });
     res.end(readFileSync(file));
   });
@@ -70,7 +71,7 @@ const melodyProject = {
 };
 
 const SHIM = `
-window.__m2o = { handlers: {}, calls: [] };
+window.__m2o = { handlers: {}, calls: [], unexpected: [] };
 window.__TAURI__ = {
   core: {
     invoke: async (cmd, args) => {
@@ -82,7 +83,13 @@ window.__TAURI__ = {
         case 'open_audio': return [${JSON.stringify(toneDto)}];
         case 'ingest_paths': return { import: { project: ${JSON.stringify(melodyProject)}, trackCount: 1, noteCount: 3 }, samples: [${JSON.stringify(toneDto)}] };
         case 'export': return { path: '/tmp/otomad.wav', bytes: 288044, durationSec: 1.5 };
-        default: return null; // play/pause/stop/seek/remove_sample/preview_sample
+        case 'play': case 'pause': case 'stop':
+        case 'seek': case 'remove_sample': case 'preview_sample':
+          return null; // known void commands
+        default:
+          // A command the mock doesn't know = broken/renamed backend wiring.
+          window.__m2o.unexpected.push(cmd);
+          return null;
       }
     },
   },
@@ -152,10 +159,16 @@ try {
     process.exitCode = 2;
   }
 } finally {
+  let unexpected = [];
+  try { unexpected = await page.evaluate(() => window.__m2o?.unexpected ?? []); } catch {}
   await browser.close();
   server.close();
   if (pageErrors.length) {
     console.error(`FAILED: ${pageErrors.length} uncaught page error(s)`);
+    if (!process.exitCode) process.exitCode = 1;
+  }
+  if (unexpected.length) {
+    console.error(`FAILED: UI invoked unknown backend command(s): ${unexpected.join(", ")}`);
     if (!process.exitCode) process.exitCode = 1;
   }
 }

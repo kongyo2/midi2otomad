@@ -40,7 +40,7 @@ port_up() { [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:1420/ 2
 # server already on :1420 is THIS checkout's app (a stale/foreign one would let
 # the smoke "pass" without exercising the current UI). We only start our own on
 # a free port, so a server we launch is this checkout by construction.
-bundle="$(grep -oE 'midi2otomad-ui-[0-9a-f]+\.js' "$ROOT/ui/dist/index.html" | head -1)"
+bundle="$(grep -oE 'midi2otomad[A-Za-z0-9._-]+\.js' "$ROOT/ui/dist/index.html" | head -1)"
 serves_checkout() { [ -n "$bundle" ] && curl -s http://localhost:1420/ 2>/dev/null | grep -q "$bundle"; }
 
 if port_up; then

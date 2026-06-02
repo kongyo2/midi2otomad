@@ -111,7 +111,9 @@ printf 'click MIDI を開く\nwait 500\ntext .topbar__title\nshot after.png\nqui
 | `repl` | stdin: `shot f` · `click <text>` · `sel <css>` · `text <css>` · `eval <js>` · `wait <ms>` · `quit` |
 
 `shot`/`flow` exit non-zero on an uncaught page error (e.g. a WASM panic via
-`console_error_panic_hook`) or an unknown command, so they work as UI smoke checks.
+`console_error_panic_hook`), an unknown driver command, or if the UI invokes a
+backend command the mock doesn't know (broken/renamed wiring) — so they work as
+UI smoke checks.
 
 Need real `.mid`/`.wav` files (for the real app's drag-drop / ingest, which read
 from disk — the driver's backend is mocked, so it doesn't use them):
