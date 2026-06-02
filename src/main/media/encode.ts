@@ -1,7 +1,50 @@
 import { writeFile } from "node:fs/promises";
 import type { BouncePcm, ExportFormat, WavBitDepth } from "../../shared/media";
+import { resampleChannel } from "../../shared/audio/resample";
 
 export type PcmInput = BouncePcm;
+
+/** Sample rates libmp3lame accepts (MPEG-1 / 2 / 2.5). */
+const MP3_SAMPLE_RATES = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000] as const;
+
+/**
+ * Map an arbitrary render rate onto a rate MP3 can encode. Rates that are an
+ * exact power-of-two multiple of a supported rate fold back into that family
+ * (96 kHz → 48 kHz, 88.2 kHz → 44.1 kHz); anything else snaps to the highest
+ * supported rate at or below it, with the MP3 minimum as the floor.
+ */
+export function mp3CompatibleRate(rate: number): number {
+  if ((MP3_SAMPLE_RATES as readonly number[]).includes(rate)) {
+    return rate;
+  }
+  for (let i = MP3_SAMPLE_RATES.length - 1; i >= 0; i -= 1) {
+    const supported = MP3_SAMPLE_RATES[i]!;
+    const ratio = rate / supported;
+    const rounded = Math.round(ratio);
+    if (ratio > 1 && Math.abs(ratio - rounded) < 1e-9 && (rounded & (rounded - 1)) === 0) {
+      return supported;
+    }
+  }
+  for (let i = MP3_SAMPLE_RATES.length - 1; i >= 0; i -= 1) {
+    if (MP3_SAMPLE_RATES[i]! <= rate) {
+      return MP3_SAMPLE_RATES[i]!;
+    }
+  }
+  return MP3_SAMPLE_RATES[0]!;
+}
+
+/** Materialise a channel to exactly `frames` samples, zero-padding any shortfall. */
+function fullChannel(channel: Float32Array, frames: number): Float32Array {
+  const out = new Float32Array(frames);
+  out.set(channel.subarray(0, Math.min(channel.length, frames)));
+  return out;
+}
+
+function resampleForMp3(pcm: PcmInput, dstRate: number): PcmInput {
+  const left = resampleChannel(fullChannel(pcm.left, pcm.frames), pcm.sampleRate, dstRate);
+  const right = resampleChannel(fullChannel(pcm.right, pcm.frames), pcm.sampleRate, dstRate);
+  return { sampleRate: dstRate, left, right, frames: left.length };
+}
 
 export interface ExportRequest {
   format: ExportFormat;
@@ -111,7 +154,9 @@ export function encodeWav(pcm: PcmInput, bitDepth: WavBitDepth = 24): Buffer {
 }
 
 /** Encode the mix to MP3 via node-av (libmp3lame) and write it to disk. */
-async function encodeMp3ToFile(pcm: PcmInput, outPath: string, kbps: number): Promise<void> {
+async function encodeMp3ToFile(input: PcmInput, outPath: string, kbps: number): Promise<void> {
+  const targetRate = mp3CompatibleRate(input.sampleRate);
+  const pcm = targetRate === input.sampleRate ? input : resampleForMp3(input, targetRate);
   const { Encoder, Muxer, Frame, FF_ENCODER_LIBMP3LAME, AV_SAMPLE_FMT_FLTP, AV_CHANNEL_LAYOUT_STEREO } =
     await import("node-av");
   const { sampleRate, left, right, frames } = pcm;

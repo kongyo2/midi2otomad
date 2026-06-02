@@ -14,6 +14,7 @@ vi.mock("./components/SampleInspector", () => ({ SampleInspector: () => <div dat
 vi.mock("./components/Timeline", () => ({ Timeline: () => <div data-testid="timeline" /> }));
 vi.mock("./components/TrackInspector", () => ({ TrackInspector: () => <div data-testid="trackinspector" /> }));
 vi.mock("./components/ReverbPanel", () => ({ ReverbPanel: () => <div data-testid="reverb" /> }));
+vi.mock("./components/OutputPanel", () => ({ OutputPanel: () => <div data-testid="output" /> }));
 vi.mock("./components/HelpPanel", () => ({ HelpPanel: () => <div data-testid="help" /> }));
 
 import { App } from "./App";
@@ -34,6 +35,7 @@ describe("App", () => {
     render(<App />);
     expect(screen.getByTestId("topbar")).toBeInTheDocument();
     expect(screen.getByTestId("timeline")).toBeInTheDocument();
+    expect(screen.getByTestId("output")).toBeInTheDocument();
   });
 
   it("toggles playback on Space but ignores form fields and other keys", () => {

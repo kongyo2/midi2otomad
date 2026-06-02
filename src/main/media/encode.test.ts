@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { encodeWav, writeExport, type PcmInput } from "./encode";
+import { encodeWav, mp3CompatibleRate, writeExport, type PcmInput } from "./encode";
 
 const mocks = vi.hoisted(() => {
   const frameFree = vi.fn();
@@ -118,6 +118,32 @@ describe("encodeWav", () => {
   });
 });
 
+describe("mp3CompatibleRate", () => {
+  it("keeps a rate that MP3 already supports", () => {
+    expect(mp3CompatibleRate(48000)).toBe(48000);
+    expect(mp3CompatibleRate(44100)).toBe(44100);
+  });
+
+  it("halves a power-of-two multiple back into the same family", () => {
+    expect(mp3CompatibleRate(96000)).toBe(48000);
+    expect(mp3CompatibleRate(88200)).toBe(44100);
+    expect(mp3CompatibleRate(176400)).toBe(44100);
+  });
+
+  it("folds a power-of-two multiple of a lower family back to that family", () => {
+    expect(mp3CompatibleRate(64000)).toBe(32000);
+  });
+
+  it("falls back to the highest supported rate at or below an odd rate", () => {
+    expect(mp3CompatibleRate(50000)).toBe(48000);
+    expect(mp3CompatibleRate(144000)).toBe(48000);
+  });
+
+  it("clamps a rate below the MP3 minimum up to the lowest supported rate", () => {
+    expect(mp3CompatibleRate(4000)).toBe(8000);
+  });
+});
+
 describe("writeExport", () => {
   it("writes a WAV file and reports its size", async () => {
     const input = pcm(10, () => 0.25);
@@ -165,6 +191,24 @@ describe("writeExport", () => {
       { format: "mp3", path: "/tmp/def.mp3" },
     );
     expect(mocks.encoderCreate).toHaveBeenCalledWith("libmp3lame", { bitrate: "320k" });
+  });
+
+  it("resamples an MP3-incompatible rate down to a supported one", async () => {
+    const frames = 2400;
+    const left = new Float32Array(frames);
+    const right = new Float32Array(frames);
+    for (let i = 0; i < frames; i += 1) {
+      left[i] = Math.sin(i / 20);
+      right[i] = -Math.sin(i / 20);
+    }
+    const result = await writeExport(
+      { sampleRate: 96000, left, right, frames },
+      { format: "mp3", path: "/tmp/hires.mp3" },
+    );
+    // 2400 frames at 96 kHz become 1200 at 48 kHz: ceil(1200 / 1152) = 2 frame buffers.
+    expect(mocks.fromAudioBuffer.mock.calls[0]![1]).toMatchObject({ sampleRate: 48000 });
+    expect(mocks.fromAudioBuffer).toHaveBeenCalledTimes(Math.ceil(1200 / 1152));
+    expect(result.durationSec).toBeCloseTo(frames / 96000, 9);
   });
 
   it("pads missing samples when encoding MP3 from a short buffer", async () => {

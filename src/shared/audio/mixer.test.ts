@@ -52,6 +52,7 @@ interface ProjectOpts {
   masterGain?: number;
   samples?: unknown[];
   tracks?: unknown[];
+  output?: unknown;
 }
 
 function makeProject(opts: ProjectOpts): Project {
@@ -62,7 +63,16 @@ function makeProject(opts: ProjectOpts): Project {
     masterGain: opts.masterGain ?? 1,
     samples: opts.samples ?? [],
     tracks: opts.tracks ?? [],
+    ...(opts.output !== undefined ? { output: opts.output } : {}),
   });
+}
+
+function maxAbs(arr: Float32Array): number {
+  let peak = 0;
+  for (let i = 0; i < arr.length; i += 1) {
+    peak = Math.max(peak, Math.abs(arr[i]!));
+  }
+  return peak;
 }
 
 function sampleRaw(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -324,17 +334,76 @@ describe("mixProject envelope and limiter", () => {
     });
     const mix = mixProject(project, bankFromRecord({ s1: { sampleRate: 1000, channels: [square], frames: 1000 } }));
     expect(mix.peak).toBeGreaterThan(0.8);
-    let maxAbs = 0;
-    for (let i = 0; i < mix.frames; i += 1) {
-      maxAbs = Math.max(maxAbs, Math.abs(mix.left[i]!));
-    }
-    expect(maxAbs).toBeLessThan(1);
+    expect(maxAbs(mix.left)).toBeLessThan(1);
   });
 
   it("leaves the buffer untouched when the limiter is disabled", () => {
     const project = makeProject({ samples: [sampleRaw()], tracks: [trackRaw()] });
     const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
     expect(mix.left[100]).toBeCloseTo(1, 5);
+  });
+});
+
+describe("mixProject output settings", () => {
+  const hot = sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } });
+
+  it("clips harder as the limiter threshold drops", () => {
+    const low = mixProject(
+      makeProject({ output: { limiter: { threshold: 0.5 } }, samples: [hot], tracks: [trackRaw()] }),
+      bankFromRecord({ s1: constSource(1, 1000) }),
+    );
+    const high = mixProject(
+      makeProject({ output: { limiter: { threshold: 0.95 } }, samples: [hot], tracks: [trackRaw()] }),
+      bankFromRecord({ s1: constSource(1, 1000) }),
+    );
+    expect(maxAbs(low.left)).toBeLessThan(maxAbs(high.left));
+  });
+
+  it("bypasses the limiter when the project disables it", () => {
+    const project = makeProject({
+      output: { limiter: { enabled: false } },
+      samples: [hot],
+      tracks: [trackRaw()],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }));
+    expect(mix.left[100]).toBeCloseTo(1, 5);
+  });
+
+  it("lets the explicit limiter option override the project setting", () => {
+    const enabledProject = makeProject({
+      output: { limiter: { enabled: true } },
+      samples: [hot],
+      tracks: [trackRaw()],
+    });
+    const forcedOff = mixProject(enabledProject, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(forcedOff.left[100]).toBeCloseTo(1, 5);
+
+    const disabledProject = makeProject({
+      output: { limiter: { enabled: false } },
+      samples: [hot],
+      tracks: [trackRaw()],
+    });
+    const forcedOn = mixProject(disabledProject, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: true });
+    expect(forcedOn.left[100]!).toBeLessThan(1);
+  });
+
+  it("uses the project tail length for the trailing silence", () => {
+    const long = mixProject(
+      makeProject({ output: { tailSec: 2 }, samples: [sampleRaw()], tracks: [trackRaw()] }),
+      bankFromRecord({ s1: constSource(1, 1000) }),
+    );
+    const short = mixProject(
+      makeProject({ output: { tailSec: 0 }, samples: [sampleRaw()], tracks: [trackRaw()] }),
+      bankFromRecord({ s1: constSource(1, 1000) }),
+    );
+    expect(long.frames).toBeGreaterThan(short.frames);
+  });
+
+  it("lets the explicit tail option override the project tail length", () => {
+    const project = makeProject({ output: { tailSec: 2 }, samples: [sampleRaw()], tracks: [trackRaw()] });
+    const projectTail = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }));
+    const overridden = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { tailSec: 0 });
+    expect(overridden.frames).toBeLessThan(projectTail.frames);
   });
 });
 

@@ -33,9 +33,9 @@ export interface MixResult {
 }
 
 export interface MixOptions {
-  /** Extra silence appended after the last sounding sample, in seconds. */
+  /** Override the project's trailing silence (seconds) after the last sounding sample. */
   tailSec?: number;
-  /** Apply the soft-knee limiter on the master bus. */
+  /** Override the project's master-limiter enable flag. */
   limiter?: boolean;
 }
 
@@ -130,8 +130,7 @@ function readSample(
   return cubicHermite(y0, y1, y2, y3, frac);
 }
 
-function softClip(x: number): number {
-  const threshold = 0.8;
+function softClip(x: number, threshold: number): number {
   const abs = Math.abs(x);
   if (abs <= threshold) {
     return x;
@@ -410,7 +409,7 @@ function applyReverb(project: Project, outRate: number, send: SendBus, left: Flo
 export function mixProject(project: Project, bank: AudioBank, options: MixOptions = {}): MixResult {
   const outRate = project.sampleRate;
   const sampleById = new Map<string, Sample>(project.samples.map((s) => [s.id, s]));
-  const tailSec = options.tailSec ?? 0.25;
+  const tailSec = options.tailSec ?? project.output.tailSec;
   const solo = anySolo(project.tracks);
   const plans: TrackPlan[] = project.tracks
     .filter((track) => trackRenders(track, solo))
@@ -458,10 +457,11 @@ export function mixProject(project: Project, bank: AudioBank, options: MixOption
     }
   }
 
-  if (options.limiter !== false) {
+  if (options.limiter ?? project.output.limiter.enabled) {
+    const threshold = project.output.limiter.threshold;
     for (let i = 0; i < frames; i += 1) {
-      left[i] = softClip(left[i]!);
-      right[i] = softClip(right[i]!);
+      left[i] = softClip(left[i]!, threshold);
+      right[i] = softClip(right[i]!, threshold);
     }
   }
 
