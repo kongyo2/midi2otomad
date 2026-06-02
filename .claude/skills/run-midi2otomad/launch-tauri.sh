@@ -36,7 +36,19 @@ port_up() { [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:1420/ 2
 # Start the dev server ourselves unless one is already serving. Track its PID so
 # cleanup() can kill it without depending on fuser/lsof, and fail fast if it
 # never serves the UI (otherwise the WebView loads an unreachable dev URL).
-if ! port_up; then
+# The built UI references a content-hashed bundle; use it to tell whether a
+# server already on :1420 is THIS checkout's app (a stale/foreign one would let
+# the smoke "pass" without exercising the current UI). We only start our own on
+# a free port, so a server we launch is this checkout by construction.
+bundle="$(grep -oE 'midi2otomad-ui-[0-9a-f]+\.js' "$ROOT/ui/dist/index.html" | head -1)"
+serves_checkout() { [ -n "$bundle" ] && curl -s http://localhost:1420/ 2>/dev/null | grep -q "$bundle"; }
+
+if port_up; then
+  serves_checkout || {
+    echo "port 1420 is busy but not serving this checkout's UI (expected $bundle); free it: fuser -k 1420/tcp" >&2
+    exit 1
+  }
+else
   ( cd "$ROOT/ui" && exec "$TRUNK" serve --port 1420 --address 127.0.0.1 >"$SERVE_LOG" 2>&1 ) &
   serve_pid=$!
   for _ in $(seq 1 60); do

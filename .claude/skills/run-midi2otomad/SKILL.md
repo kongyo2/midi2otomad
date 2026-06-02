@@ -69,8 +69,10 @@ cargo build -p midi2otomad      # -> target/debug/midi2otomad (~1.5 min cold)
 Launches `target/debug/midi2otomad` headless under Xvfb+WebKitGTK and grabs the
 window. A *debug* build loads the dev URL, so the script starts `trunk serve`
 on 1420 itself (what `cargo tauri dev` does) and tears it down after. It **exits
-non-zero** if the dev server never comes up, the app dies before a window
-appears, or the screenshot is blank — so it doubles as an integration smoke.
+non-zero** if the dev server never comes up (or `:1420` is already serving a
+different build), the app dies before a window appears, or the screenshot is
+blank — so it doubles as an integration smoke. A `trunk serve` you started from
+this checkout is detected and reused (and left running).
 
 ```bash
 bash .claude/skills/run-midi2otomad/launch-tauri.sh /tmp/m2o-shots/tauri.png 10
@@ -107,6 +109,9 @@ printf 'click MIDI を開く\nwait 500\ntext .topbar__title\nshot after.png\nqui
 | `flow [dir]` | load MIDI + add sample + reverb-on → 4 screenshots |
 | `eval '<js>'` | run JS in the page, print JSON result |
 | `repl` | stdin: `shot f` · `click <text>` · `sel <css>` · `text <css>` · `eval <js>` · `wait <ms>` · `quit` |
+
+`shot`/`flow` exit non-zero on an uncaught page error (e.g. a WASM panic via
+`console_error_panic_hook`) or an unknown command, so they work as UI smoke checks.
 
 Need real `.mid`/`.wav` files (for the real app's drag-drop / ingest, which read
 from disk — the driver's backend is mocked, so it doesn't use them):

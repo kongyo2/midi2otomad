@@ -28,6 +28,10 @@ const DIST = join(ROOT, "ui", "dist");
 const SHOTS = process.env.M2O_SHOTS || "/tmp/m2o-shots";
 mkdirSync(SHOTS, { recursive: true });
 
+// Uncaught exceptions in the page (e.g. a Rust panic via console_error_panic_hook)
+// must fail the run, not just print — otherwise shot/flow pass on a UI regression.
+const pageErrors = [];
+
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".wasm": "application/wasm", ".json": "application/json",
@@ -93,7 +97,7 @@ async function open() {
   const port = server.address().port;
   const browser = await chromium.launch({ args: ["--no-sandbox"] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.on("pageerror", (e) => console.error("PAGE ERROR:", e.message));
+  page.on("pageerror", (e) => { pageErrors.push(e.message); console.error("PAGE ERROR:", e.message); });
   await page.addInitScript(SHIM);
   await page.goto(`http://127.0.0.1:${port}/`);
   await page.waitForSelector(".studio", { timeout: 15000 });
@@ -145,8 +149,13 @@ try {
     }
   } else {
     console.error("unknown cmd:", cmd);
+    process.exitCode = 2;
   }
 } finally {
   await browser.close();
   server.close();
+  if (pageErrors.length) {
+    console.error(`FAILED: ${pageErrors.length} uncaught page error(s)`);
+    if (!process.exitCode) process.exitCode = 1;
+  }
 }
