@@ -1,11 +1,11 @@
-node_modules/
-out/
-dist/
-release/
-coverage/
-*.log
-*.tsbuildinfo
+# Rust / Tauri
+/target/
+**/target/
+ui/dist/
+src-tauri/gen/
+
+# OS / editor
 .DS_Store
 Thumbs.db
-.vite/
+*.log
 tmp/

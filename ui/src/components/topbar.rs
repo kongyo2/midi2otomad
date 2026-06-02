@@ -1,0 +1,150 @@
+use leptos::prelude::*;
+
+use crate::format::format_time;
+use crate::state::{project_duration, Studio};
+
+#[component]
+pub fn TopBar() -> impl IntoView {
+    let s = expect_context::<Studio>();
+    let format = RwSignal::new("wav".to_string());
+    let wav_bit_depth = RwSignal::new(24u16);
+    let mp3_bitrate = RwSignal::new(320u32);
+
+    let position = move || s.status.get().position;
+    let duration = move || {
+        let mix = s.status.get().duration;
+        if mix > 0.0 {
+            mix
+        } else {
+            project_duration(&s.project.get())
+        }
+    };
+    let level = move || (s.status.get().level as f64 * 100.0).clamp(0.0, 100.0);
+
+    let do_export = move |_| {
+        let fmt = format.get();
+        if fmt == "mp3" {
+            s.export("mp3".into(), None, Some(mp3_bitrate.get()));
+        } else {
+            s.export("wav".into(), Some(wav_bit_depth.get()), None);
+        }
+    };
+
+    view! {
+        <header class="topbar">
+            <div class="topbar__brand">
+                <span class="topbar__logo">"🎹"</span>
+                <div>
+                    <h1 class="topbar__title">"midi2otomad"</h1>
+                    <p class="topbar__tag">"MIDI 音MAD スタジオ"</p>
+                </div>
+            </div>
+
+            <div class="topbar__group">
+                <button class="btn btn--ghost" on:click=move |_| s.open_midi()>
+                    "MIDI を開く"
+                </button>
+            </div>
+
+            <div class="topbar__transport">
+                <button class="transportbtn" title="先頭へ" on:click=move |_| s.seek(0.0)>
+                    "⏮"
+                </button>
+                <button
+                    class="transportbtn transportbtn--main"
+                    on:click=move |_| s.toggle_play()
+                >
+                    {move || if s.status.get().playing { "⏸" } else { "▶" }}
+                </button>
+                <button class="transportbtn" title="停止" on:click=move |_| s.stop()>
+                    "⏹"
+                </button>
+                <span class="topbar__time">
+                    {move || format_time(position())}
+                    <span class="topbar__time-sep">"/"</span>
+                    {move || format_time(duration())}
+                </span>
+                <div class="meter" title="マスターレベル">
+                    <div
+                        class="meter__fill"
+                        style:width=move || format!("{}%", level())
+                    ></div>
+                </div>
+            </div>
+
+            <div class="topbar__group topbar__master">
+                <div class="microfield">
+                    <span>"BPM"</span>
+                    <span class="microfield__value">
+                        {move || (s.project.get().bpm.round() as i64).to_string()}
+                    </span>
+                </div>
+                <label class="microfield microfield--wide">
+                    <span>"Master"</span>
+                    <input
+                        class="range"
+                        type="range"
+                        min=0
+                        max=2
+                        step=0.01
+                        prop:value=move || s.project.get().master_gain
+                        on:input=move |ev| {
+                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                                s.project.update(|p| p.master_gain = v);
+                                s.mark_dirty();
+                            }
+                        }
+                    />
+                </label>
+            </div>
+
+            <div class="topbar__export">
+                <select
+                    class="select select--mini"
+                    on:change=move |ev| format.set(event_target_value(&ev))
+                >
+                    <option value="wav">"WAV"</option>
+                    <option value="mp3">"MP3"</option>
+                </select>
+                {move || {
+                    if format.get() == "wav" {
+                        view! {
+                            <select
+                                class="select select--mini"
+                                on:change=move |ev| {
+                                    if let Ok(v) = event_target_value(&ev).parse::<u16>() {
+                                        wav_bit_depth.set(v);
+                                    }
+                                }
+                            >
+                                <option value="16">"16 bit"</option>
+                                <option value="24" selected>"24 bit"</option>
+                                <option value="32">"32 bit float"</option>
+                            </select>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <select
+                                class="select select--mini"
+                                on:change=move |ev| {
+                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                        mp3_bitrate.set(v);
+                                    }
+                                }
+                            >
+                                <option value="192">"192 kbps"</option>
+                                <option value="256">"256 kbps"</option>
+                                <option value="320" selected>"320 kbps"</option>
+                            </select>
+                        }
+                            .into_any()
+                    }
+                }}
+                <button class="btn" prop:disabled=move || s.busy.get().is_some() on:click=do_export>
+                    {move || if s.busy.get().is_some() { "処理中…" } else { "⬇ 書き出し" }}
+                </button>
+            </div>
+        </header>
+    }
+}

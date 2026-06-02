@@ -1,0 +1,39 @@
+[package]
+name = "midi2otomad-ui"
+description = "midi2otomad の Leptos (Rust/WASM) フロントエンド"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+gloo-timers = { version = "0.3", features = ["futures"] }
+midi2otomad-core = { path = "../core", default-features = false }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "Window",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "HtmlCanvasElement",
+  "CanvasRenderingContext2d",
+  "HtmlInputElement",
+  "HtmlSelectElement",
+  "DomRect",
+  "Event",
+  "EventTarget",
+  "MouseEvent",
+  "PointerEvent",
+  "KeyboardEvent",
+  "CssStyleDeclaration",
+]

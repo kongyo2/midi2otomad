@@ -1,0 +1,27 @@
+[package]
+name = "midi2otomad"
+description = "単体で完結する GUI を備えた MIDI 音MAD 作成デスクトップアプリ (Tauri 2 / 純Rust)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "midi2otomad_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "midi2otomad"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+midi2otomad-core = { path = "../core" }
+cpal = "0.15"
