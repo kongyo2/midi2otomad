@@ -252,8 +252,12 @@ impl Studio {
     }
 
     pub fn preview_sample(&self, sample: Sample) {
+        let this = *self;
         spawn_local(async move {
             let _ = api::preview_sample(&sample, None).await;
+            // 試聴はプレイヤーのバッファを差し替えるので、次の再生/シークで
+            // プロジェクトのミックスを必ず再レンダリングさせる。
+            this.dirty.set(true);
         });
     }
 

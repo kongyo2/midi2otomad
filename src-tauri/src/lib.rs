@@ -23,9 +23,7 @@ use midi2otomad_core::schema::{
 use player::{Player, PlayerStatus};
 
 const PEAK_BUCKETS: usize = 600;
-const AUDIO_EXTENSIONS: [&str; 10] = [
-    "wav", "mp3", "ogg", "flac", "m4a", "aac", "aif", "aiff", "opus", "wma",
-];
+const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", "aif", "aiff"];
 
 pub struct AppState {
     bank: Mutex<HashMap<String, PcmAudio>>,
