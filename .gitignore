@@ -9,3 +9,9 @@ coverage/
 Thumbs.db
 .vite/
 tmp/
+
+# Rust / Tauri
+/target/
+**/target/
+ui/dist/
+src-tauri/gen/
