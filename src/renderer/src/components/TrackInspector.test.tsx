@@ -161,6 +161,35 @@ describe("TrackInspector", () => {
     expect(screen.getByText(/エクスプレッション\(CC11\)/)).toBeInTheDocument();
   });
 
+  it("toggles whether dynamics are reflected", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.click(screen.getByLabelText("抑揚を反映"));
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", {
+      dynamics: expect.objectContaining({ enabled: false }),
+    });
+  });
+
+  it("edits the dynamics depth", () => {
+    const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
+    holder.value = value;
+    render(<TrackInspector />);
+    fireEvent.change(screen.getByLabelText("抑揚の深さ"), { target: { value: "0.5" } });
+    expect(value.updateTrack).toHaveBeenCalledWith("t1", {
+      dynamics: expect.objectContaining({ amount: 0.5 }),
+    });
+  });
+
+  it("explains that velocity alone drives volume when dynamics are disabled", () => {
+    holder.value = makeStudioValue({
+      project: projectWithTrack({ dynamics: { enabled: false, volume: [], expression: [{ t: 0, v: 1 }] } }),
+      selectedTrackId: "t1",
+    });
+    render(<TrackInspector />);
+    expect(screen.getByText(/ベロシティのみ/)).toBeInTheDocument();
+  });
+
   it("assigns and clears per-note sample overrides", () => {
     const value = makeStudioValue({ project: projectWithTrack(), selectedTrackId: "t1" });
     holder.value = value;

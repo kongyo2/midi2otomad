@@ -162,6 +162,16 @@ describe("SampleInspector", () => {
     });
   });
 
+  it("toggles the dynamic-pitch section on and off", () => {
+    const value = withSample();
+    holder.value = value;
+    render(<SampleInspector />);
+    fireEvent.click(screen.getByLabelText("ダイナミックピッチ"));
+    expect(value.updateSample).toHaveBeenCalledWith("s1", {
+      pitchMod: expect.objectContaining({ enabled: false }),
+    });
+  });
+
   it("exposes the glide curve and vibrato fade controls", () => {
     const value = withSample();
     holder.value = value;

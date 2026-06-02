@@ -44,7 +44,13 @@ export function TrackInspector(): React.JSX.Element {
     );
   }
 
-  const hasExpression = track.dynamics.expression.length > 0 || track.dynamics.volume.length > 0;
+  const dynamics = track.dynamics;
+  const hasExpression = dynamics.expression.length > 0 || dynamics.volume.length > 0;
+  const dynamicsHint = !dynamics.enabled
+    ? "🎚 抑揚をオフにして、各ノートのベロシティのみで音量を決めます。"
+    : hasExpression
+      ? "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"
+      : "🎚 各ノートのベロシティを音量に反映します。";
 
   return (
     <section className="panel">
@@ -136,11 +142,32 @@ export function TrackInspector(): React.JSX.Element {
         />
       </label>
 
-      <p className="hintline">
-        {hasExpression
-          ? "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"
-          : "🎚 各ノートのベロシティを音量に反映します。"}
-      </p>
+      <h3 className="subheading">抑揚（ダイナミクス）</h3>
+      <label className="checkline">
+        <input
+          type="checkbox"
+          aria-label="抑揚を反映"
+          checked={dynamics.enabled}
+          onChange={(event) => updateTrack(track.id, { dynamics: { ...dynamics, enabled: event.target.checked } })}
+        />
+        ベロシティ・エクスプレッションを反映
+      </label>
+      <label className="field">
+        <span className="field__label">
+          抑揚の深さ <em>{Math.round(dynamics.amount * 100)}%</em>
+        </span>
+        <input
+          className="range"
+          type="range"
+          aria-label="抑揚の深さ"
+          min={0}
+          max={1}
+          step={0.01}
+          value={dynamics.amount}
+          onChange={(event) => updateTrack(track.id, { dynamics: { ...dynamics, amount: Number(event.target.value) } })}
+        />
+      </label>
+      <p className="hintline">{dynamicsHint}</p>
 
       <h3 className="subheading">ボイス（同時発音）管理</h3>
       <label className="field">

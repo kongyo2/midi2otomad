@@ -49,6 +49,7 @@ export const FilterSchema = z.object({
 });
 
 export const PitchModSchema = z.object({
+  enabled: z.boolean().default(true),
   glideSemitones: z.number().min(-48).max(48).default(0),
   glideMs: z.number().min(0).max(5000).default(0),
   glideCurve: CURVE,
@@ -119,6 +120,8 @@ export const AutomationPointSchema = z.object({
 });
 
 export const TrackDynamicsSchema = z.object({
+  enabled: z.boolean().default(true),
+  amount: z.number().min(0).max(1).default(1),
   volume: z.array(AutomationPointSchema).default([]),
   expression: z.array(AutomationPointSchema).default([]),
 });
@@ -135,7 +138,7 @@ export const TrackSchema = z.object({
   defaultSampleId: z.string().nullable().default(null),
   noteSampleMap: z.record(z.string(), z.string()).default({}),
   notes: z.array(NoteSchema).default([]),
-  dynamics: TrackDynamicsSchema.default({ volume: [], expression: [] }),
+  dynamics: TrackDynamicsSchema.prefault({}),
   reverbSend: z.number().min(0).max(1).default(0),
   polyphony: PolyphonySchema.prefault({}),
 });

@@ -63,6 +63,7 @@ describe("parseProject", () => {
         lfoShape: "sine",
       },
       pitchMod: {
+        enabled: true,
         glideSemitones: 0,
         glideMs: 0,
         glideCurve: 0,
@@ -273,6 +274,53 @@ describe("extended synthesis schema", () => {
         name: "x",
         tracks: [{ id: "t1", name: "t", reverbSend: 2 }],
       }),
+    ).toThrow();
+  });
+});
+
+describe("pitch modulation enable flag", () => {
+  it("enables the dynamic-pitch section by default", () => {
+    const project = parseProject({ version: 1, name: "P", samples: [{ id: "s1", name: "s" }] });
+    expect(project.samples[0]!.pitchMod.enabled).toBe(true);
+  });
+
+  it("preserves a disabled dynamic-pitch section", () => {
+    const project = parseProject({
+      version: 1,
+      name: "P",
+      samples: [{ id: "s1", name: "s", pitchMod: { enabled: false, glideSemitones: 12 } }],
+    });
+    expect(project.samples[0]!.pitchMod.enabled).toBe(false);
+    expect(project.samples[0]!.pitchMod.glideSemitones).toBe(12);
+  });
+});
+
+describe("track dynamics enable and depth", () => {
+  it("enables dynamics at full depth by default", () => {
+    const project = parseProject({ version: 1, name: "D", tracks: [{ id: "t1", name: "t" }] });
+    expect(project.tracks[0]!.dynamics.enabled).toBe(true);
+    expect(project.tracks[0]!.dynamics.amount).toBe(1);
+  });
+
+  it("preserves a disabled dynamics block with a custom depth", () => {
+    const project = parseProject({
+      version: 1,
+      name: "D",
+      tracks: [{ id: "t1", name: "t", dynamics: { enabled: false, amount: 0.4 } }],
+    });
+    expect(project.tracks[0]!.dynamics.enabled).toBe(false);
+    expect(project.tracks[0]!.dynamics.amount).toBe(0.4);
+  });
+
+  it("rejects a dynamics depth below zero", () => {
+    expect(() =>
+      parseProject({ version: 1, name: "x", tracks: [{ id: "t1", name: "t", dynamics: { amount: -0.1 } }] }),
+    ).toThrow();
+  });
+
+  it("rejects a dynamics depth above one", () => {
+    expect(() =>
+      parseProject({ version: 1, name: "x", tracks: [{ id: "t1", name: "t", dynamics: { amount: 1.5 } }] }),
     ).toThrow();
   });
 });

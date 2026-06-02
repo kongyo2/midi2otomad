@@ -157,15 +157,22 @@ function trackRenders(track: Track, solo: boolean): boolean {
   return !track.muted && (!solo || track.solo);
 }
 
+/**
+ * Per-frame dynamics gain from the track's volume/expression automation, or
+ * null when dynamics are switched off or there is no automation to apply (the
+ * caller then leaves the voice at unity). `amount` is a depth knob that fades
+ * the curve back toward unity gain: 1 keeps the full automation, 0 flattens it.
+ */
 function buildTrackDynamics(track: Track, frames: number, sampleRate: number): Float32Array | null {
-  const { volume, expression } = track.dynamics;
-  if (volume.length === 0 && expression.length === 0) {
+  const { enabled, amount, volume, expression } = track.dynamics;
+  if (!enabled || (volume.length === 0 && expression.length === 0)) {
     return null;
   }
   const out = new Float32Array(frames);
   for (let i = 0; i < frames; i += 1) {
     const t = i / sampleRate;
-    out[i] = sampleAutomation(volume, t) * sampleAutomation(expression, t);
+    const raw = sampleAutomation(volume, t) * sampleAutomation(expression, t);
+    out[i] = 1 - amount * (1 - raw);
   }
   return out;
 }
@@ -242,7 +249,8 @@ function renderNote(
     if (tSec >= cutEndSec) {
       break;
     }
-    const increment = baseIncrement * semitonesToRatio(pitchOffsetSemitones(sample.pitchMod, tSec));
+    const pitchOffset = sample.pitchMod.enabled ? pitchOffsetSemitones(sample.pitchMod, tSec) : 0;
+    const increment = baseIncrement * semitonesToRatio(pitchOffset);
     if (outIdx < 0) {
       srcPos += increment;
       continue;

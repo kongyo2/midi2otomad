@@ -283,6 +283,17 @@ export function SampleInspector(): React.JSX.Element {
 
       <h3 className="subheading">ダイナミックピッチ</h3>
       <div className="grid2">
+        <label className="checkline">
+          <input
+            type="checkbox"
+            aria-label="ダイナミックピッチ"
+            checked={sample.pitchMod.enabled}
+            onChange={(event) =>
+              updateSample(sample.id, { pitchMod: { ...sample.pitchMod, enabled: event.target.checked } })
+            }
+          />
+          有効
+        </label>
         {PITCH_FIELDS.map((field) => (
           <RangeField key={field.key} field={field} value={sample.pitchMod[field.key]} onChange={setPitch} />
         ))}

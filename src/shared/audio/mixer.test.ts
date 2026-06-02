@@ -269,6 +269,34 @@ describe("mixProject track dynamics", () => {
     const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
     expect(mix.left[100]!).toBeCloseTo(0.25, 4);
   });
+
+  it("ignores the automation curves when dynamics are disabled", () => {
+    const project = makeProject({
+      samples: [sampleRaw()],
+      tracks: [
+        trackRaw({
+          notes: [{ pitch: 60, startSec: 0, durationSec: 0.5, velocity: 127 }],
+          dynamics: { enabled: false, volume: [{ t: 0, v: 0.5 }], expression: [] },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.left[100]!).toBeCloseTo(1, 4);
+  });
+
+  it("blends the automation toward flat with a partial depth", () => {
+    const project = makeProject({
+      samples: [sampleRaw()],
+      tracks: [
+        trackRaw({
+          notes: [{ pitch: 60, startSec: 0, durationSec: 0.5, velocity: 127 }],
+          dynamics: { amount: 0.5, volume: [{ t: 0, v: 0.5 }], expression: [] },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false });
+    expect(mix.left[100]!).toBeCloseTo(0.75, 4);
+  });
 });
 
 describe("mixProject panning", () => {
@@ -589,6 +617,32 @@ describe("mixProject dynamic pitch", () => {
       }
     }
     expect(wobbles).toBe(true);
+  });
+
+  it("leaves playback unmodulated when the dynamic-pitch section is disabled", () => {
+    const src = monoRampSource(1000);
+    const disabled = mixProject(
+      makeProject({
+        samples: [
+          sampleRaw({
+            envelope: { attackMs: 0, releaseMs: 0 },
+            pitchMod: { enabled: false, glideSemitones: 12, glideMs: 1000, vibratoCents: 200, vibratoHz: 8 },
+          }),
+        ],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    const plain = mixProject(
+      makeProject({
+        samples: [sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } })],
+        tracks: [trackRaw()],
+      }),
+      bankFromRecord({ s1: src }),
+      { limiter: false },
+    );
+    expect([...disabled.left]).toEqual([...plain.left]);
   });
 });
 
