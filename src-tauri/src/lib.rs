@@ -45,11 +45,14 @@ impl AppState {
         }
     }
 
-    fn render(&self, project: &Project, options: MixOptions) -> Result<MixResult, String> {
-        let bank = self
-            .bank
+    fn lock_bank(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, PcmAudio>>, String> {
+        self.bank
             .lock()
-            .map_err(|_| "バンクのロックに失敗".to_string())?;
+            .map_err(|_| "バンクのロックに失敗".to_string())
+    }
+
+    fn render(&self, project: &Project, options: MixOptions) -> Result<MixResult, String> {
+        let bank = self.lock_bank()?;
         Ok(mix_project(project, &*bank, &options))
     }
 }
@@ -131,11 +134,7 @@ fn decode_and_store(state: &AppState, path: &std::path::Path) -> Result<SampleDt
         .rsplit_once('.')
         .map(|(stem, _)| stem.to_string())
         .unwrap_or_else(|| file_name.clone());
-    state
-        .bank
-        .lock()
-        .map_err(|_| "バンクのロックに失敗".to_string())?
-        .insert(id.clone(), pcm);
+    state.lock_bank()?.insert(id.clone(), pcm);
     Ok(SampleDto {
         id,
         name,
@@ -233,11 +232,7 @@ fn ingest_paths(
 
 #[tauri::command]
 fn remove_sample(state: State<AppState>, id: String) -> Result<(), String> {
-    state
-        .bank
-        .lock()
-        .map_err(|_| "バンクのロックに失敗".to_string())?
-        .remove(&id);
+    state.lock_bank()?.remove(&id);
     Ok(())
 }
 
@@ -249,10 +244,7 @@ fn preview_sample(
 ) -> Result<(), String> {
     let note_pitch = pitch.unwrap_or(sample.base_pitch);
     let duration = {
-        let bank = state
-            .bank
-            .lock()
-            .map_err(|_| "バンクのロックに失敗".to_string())?;
+        let bank = state.lock_bank()?;
         let pcm = bank.get(&sample.id).ok_or("素材がデコードされていません")?;
         let natural = (pcm.frames as f64 / pcm.sample_rate).min(2.2);
         if sample.loop_region.enabled {
