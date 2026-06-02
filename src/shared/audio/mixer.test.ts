@@ -725,6 +725,188 @@ describe("mixProject reverb send", () => {
   });
 });
 
+describe("mixProject polyphony", () => {
+  const dry = sampleRaw({ envelope: { attackMs: 0, releaseMs: 0 } });
+
+  function polyMix(notes: unknown[], polyphony: Record<string, unknown>): Float32Array {
+    const project = makeProject({ samples: [dry], tracks: [trackRaw({ notes, polyphony })] });
+    return mixProject(project, bankFromRecord({ s1: constSource(1, 1000) }), { limiter: false }).left;
+  }
+
+  it("lets a held note keep ringing when stop grouping is off", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 60, startSec: 0.5, durationSec: 0.05, velocity: 127 },
+    ];
+    expect(Math.abs(polyMix(notes, { stopMode: "none" })[800]!)).toBeGreaterThan(0);
+  });
+
+  it("chokes the earlier same-pitch note under pitch stop mode", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 60, startSec: 0.5, durationSec: 0.05, velocity: 127 },
+    ];
+    expect(polyMix(notes, { stopMode: "pitch" })[800]).toBe(0);
+  });
+
+  it("sums every overlapping voice when the cap is unlimited", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 64, startSec: 0.2, durationSec: 1, velocity: 127 },
+      { pitch: 67, startSec: 0.4, durationSec: 1, velocity: 127 },
+    ];
+    expect(polyMix(notes, { maxVoices: 0 })[600]!).toBeCloseTo(3, 5);
+  });
+
+  it("steals the oldest voice once a track exceeds its cap", () => {
+    const notes = [
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+      { pitch: 64, startSec: 0.2, durationSec: 1, velocity: 127 },
+      { pitch: 67, startSec: 0.4, durationSec: 1, velocity: 127 },
+    ];
+    expect(polyMix(notes, { maxVoices: 2 })[600]!).toBeCloseTo(2, 5);
+  });
+
+  it("fades a stolen voice quickly instead of dragging its full release tail", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({ id: "long", envelope: { attackMs: 0, releaseMs: 500 } }),
+        sampleRaw({ id: "short", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "long",
+          noteSampleMap: { "64": "short" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 2, velocity: 127 },
+            { pitch: 64, startSec: 0.5, durationSec: 0.1, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "newest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ long: constSource(1, 3000), short: constSource(1, 3000) }), {
+      limiter: false,
+    });
+    expect(mix.left[800]).toBe(0);
+  });
+
+  it("frees a one-shot voice when its sample ends so a later capped note still plays", () => {
+    const project = makeProject({
+      samples: [sampleRaw({ id: "hit", envelope: { attackMs: 0, releaseMs: 0 } })],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "hit",
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 2, velocity: 127 },
+            { pitch: 60, startSec: 1, durationSec: 0.2, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ hit: constSource(1, 200) }), { limiter: false });
+    expect(mix.left[1100]!).toBeGreaterThan(0);
+  });
+
+  it("holds a looping voice for the whole note, so the later capped note is dropped", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({
+          id: "pad",
+          envelope: { attackMs: 0, releaseMs: 0 },
+          loop: { enabled: true, startSec: 0, endSec: 0.2 },
+        }),
+        sampleRaw({ id: "beep", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "pad",
+          noteSampleMap: { "72": "beep" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 2, velocity: 127 },
+            { pitch: 72, startSec: 1, durationSec: 0.5, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ pad: constSource(1, 200), beep: constSource(0.5, 2000) }), {
+      limiter: false,
+    });
+    expect(mix.left[1100]!).toBeCloseTo(1, 5);
+  });
+
+  it("counts a release tail toward the cap, choking it when a new note arrives", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({ id: "rel", envelope: { attackMs: 0, releaseMs: 500 } }),
+        sampleRaw({ id: "dry", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "rel",
+          noteSampleMap: { "64": "dry" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 0.1, velocity: 127 },
+            { pitch: 64, startSec: 0.3, durationSec: 0.1, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "newest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ rel: constSource(1, 3000), dry: constSource(1, 3000) }), {
+      limiter: false,
+    });
+    expect(mix.left[500]).toBe(0);
+  });
+
+  it("sizes the render from surviving voices, not dropped ones", () => {
+    const project = makeProject({
+      samples: [sampleRaw()],
+      tracks: [
+        trackRaw({
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 5, velocity: 127 },
+            { pitch: 64, startSec: 0, durationSec: 0.1, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "newest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ s1: constSource(1, 6000) }), { limiter: false });
+    expect(mix.frames).toBeLessThan(1000);
+  });
+
+  it("does not free a pitch-modulated one-shot early, honoring the cap", () => {
+    const project = makeProject({
+      samples: [
+        sampleRaw({
+          id: "lead",
+          envelope: { attackMs: 0, releaseMs: 0 },
+          pitchMod: { glideSemitones: -5, glideMs: 1000 },
+        }),
+        sampleRaw({ id: "beep", envelope: { attackMs: 0, releaseMs: 0 } }),
+      ],
+      tracks: [
+        trackRaw({
+          defaultSampleId: "lead",
+          noteSampleMap: { "64": "beep" },
+          notes: [
+            { pitch: 60, startSec: 0, durationSec: 1, velocity: 127 },
+            { pitch: 64, startSec: 0.5, durationSec: 0.3, velocity: 127 },
+          ],
+          polyphony: { maxVoices: 1, priority: "oldest", stopMode: "none" },
+        }),
+      ],
+    });
+    const mix = mixProject(project, bankFromRecord({ lead: constSource(1, 100), beep: constSource(0.5, 2000) }), {
+      limiter: false,
+    });
+    expect(mix.left[600]).toBe(0);
+  });
+});
+
 describe("mixProject buffer bounds", () => {
   it("skips frames scheduled before time zero", () => {
     const project = makeProject({ samples: [sampleRaw()], tracks: [trackRaw()] });

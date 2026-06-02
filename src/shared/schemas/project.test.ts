@@ -277,6 +277,40 @@ describe("extended synthesis schema", () => {
   });
 });
 
+describe("track polyphony schema", () => {
+  it("defaults to unlimited voices with newest priority and no stop grouping", () => {
+    const project = parseProject({ version: 1, name: "P", tracks: [{ id: "t1", name: "t" }] });
+    expect(project.tracks[0]!.polyphony).toEqual({ maxVoices: 0, priority: "newest", stopMode: "none" });
+  });
+
+  it("preserves an explicitly configured polyphony block", () => {
+    const project = parseProject({
+      version: 1,
+      name: "P",
+      tracks: [{ id: "t1", name: "t", polyphony: { maxVoices: 4, priority: "oldest", stopMode: "pitch" } }],
+    });
+    expect(project.tracks[0]!.polyphony).toEqual({ maxVoices: 4, priority: "oldest", stopMode: "pitch" });
+  });
+
+  it("rejects an unknown playback priority", () => {
+    expect(() =>
+      parseProject({ version: 1, name: "x", tracks: [{ id: "t1", name: "t", polyphony: { priority: "loudest" } }] }),
+    ).toThrow();
+  });
+
+  it("rejects an unknown stop mode", () => {
+    expect(() =>
+      parseProject({ version: 1, name: "x", tracks: [{ id: "t1", name: "t", polyphony: { stopMode: "channel" } }] }),
+    ).toThrow();
+  });
+
+  it("rejects a negative voice cap", () => {
+    expect(() =>
+      parseProject({ version: 1, name: "x", tracks: [{ id: "t1", name: "t", polyphony: { maxVoices: -1 } }] }),
+    ).toThrow();
+  });
+});
+
 describe("createEmptyProject", () => {
   it("creates a default-named project", () => {
     const project = createEmptyProject();

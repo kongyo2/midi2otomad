@@ -18,6 +18,10 @@ export const LFO_SHAPES = ["sine", "triangle", "square", "saw"] as const;
 
 export const INTERPOLATION_MODES = ["linear", "hermite"] as const;
 
+export const VOICE_PRIORITIES = ["newest", "oldest", "highest", "lowest"] as const;
+
+export const STOP_MODES = ["none", "pitch", "sample", "track"] as const;
+
 const CURVE = z.number().min(-8).max(8).default(0);
 
 export const EnvelopeSchema = z.object({
@@ -86,6 +90,12 @@ export const ReverbSchema = z.object({
   preDelayMs: z.number().min(0).max(500).default(0),
 });
 
+export const PolyphonySchema = z.object({
+  maxVoices: z.number().int().min(0).max(64).default(0),
+  priority: z.enum(VOICE_PRIORITIES).default("newest"),
+  stopMode: z.enum(STOP_MODES).default("none"),
+});
+
 export const NoteSchema = z.object({
   pitch: z.number().int().min(0).max(127),
   startSec: z.number().min(0),
@@ -117,6 +127,7 @@ export const TrackSchema = z.object({
   notes: z.array(NoteSchema).default([]),
   dynamics: TrackDynamicsSchema.default({ volume: [], expression: [] }),
   reverbSend: z.number().min(0).max(1).default(0),
+  polyphony: PolyphonySchema.prefault({}),
 });
 
 export const TempoSchema = z.object({
@@ -142,6 +153,9 @@ export type Filter = z.infer<typeof FilterSchema>;
 export type FilterType = (typeof FILTER_TYPES)[number];
 export type LfoShape = (typeof LFO_SHAPES)[number];
 export type InterpolationMode = (typeof INTERPOLATION_MODES)[number];
+export type VoicePriority = (typeof VOICE_PRIORITIES)[number];
+export type StopMode = (typeof STOP_MODES)[number];
+export type Polyphony = z.infer<typeof PolyphonySchema>;
 export type PitchMod = z.infer<typeof PitchModSchema>;
 export type Reverb = z.infer<typeof ReverbSchema>;
 export type Loop = z.infer<typeof LoopSchema>;

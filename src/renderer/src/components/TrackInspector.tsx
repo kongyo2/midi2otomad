@@ -1,7 +1,22 @@
 import { useMemo } from "react";
 import { useStudio } from "../state/StudioContext";
 import { midiToNoteName } from "../../../shared/music/pitch";
+import type { StopMode, VoicePriority } from "../../../shared/schemas/project";
 import { formatDb } from "../util/format";
+
+const PRIORITY_LABELS: Record<VoicePriority, string> = {
+  newest: "新しい音を優先",
+  oldest: "古い音を優先",
+  highest: "高い音を優先",
+  lowest: "低い音を優先",
+};
+
+const STOP_MODE_LABELS: Record<StopMode, string> = {
+  none: "重ねる（停止しない）",
+  pitch: "同じ音程を停止",
+  sample: "同じ素材を停止",
+  track: "トラック全体を停止",
+};
 
 export function TrackInspector(): React.JSX.Element {
   const { project, selectedTrackId, updateTrack, setNoteSample, selectSample } = useStudio();
@@ -126,6 +141,69 @@ export function TrackInspector(): React.JSX.Element {
           ? "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"
           : "🎚 各ノートのベロシティを音量に反映します。"}
       </p>
+
+      <h3 className="subheading">ボイス（同時発音）管理</h3>
+      <label className="field">
+        <span className="field__label">
+          最大同時発音数 <em>{track.polyphony.maxVoices === 0 ? "無制限" : `${track.polyphony.maxVoices} 音`}</em>
+        </span>
+        <input
+          className="input"
+          type="number"
+          min={0}
+          max={64}
+          step={1}
+          value={track.polyphony.maxVoices}
+          onChange={(event) =>
+            updateTrack(track.id, {
+              polyphony: {
+                ...track.polyphony,
+                maxVoices: Math.max(0, Math.min(64, Math.round(Number(event.target.value)))),
+              },
+            })
+          }
+        />
+      </label>
+
+      <div className="grid2">
+        <label className="field">
+          <span className="field__label">優先再生</span>
+          <select
+            className="select"
+            value={track.polyphony.priority}
+            onChange={(event) =>
+              updateTrack(track.id, {
+                polyphony: { ...track.polyphony, priority: event.target.value as VoicePriority },
+              })
+            }
+          >
+            {Object.entries(PRIORITY_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span className="field__label">停止方法</span>
+          <select
+            className="select"
+            value={track.polyphony.stopMode}
+            onChange={(event) =>
+              updateTrack(track.id, {
+                polyphony: { ...track.polyphony, stopMode: event.target.value as StopMode },
+              })
+            }
+          >
+            {Object.entries(STOP_MODE_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="hintline">🎹 同時に鳴らせる音数・あふれた時に残す音・新しい音で止める範囲を設定します。</p>
 
       <h3 className="subheading">ノート番号ごとの素材割り当て</h3>
       <p className="panel__muted small">特定の音だけ別素材に差し替えできます（ドラムキットや音域別の貼り替えに）。</p>

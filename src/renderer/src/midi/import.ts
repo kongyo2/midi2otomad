@@ -1,6 +1,6 @@
 import { Midi } from "@tonejs/midi";
 import { makeId } from "../../../shared/id";
-import { type Project, parseProject } from "../../../shared/schemas/project";
+import { type Polyphony, type Project, parseProject } from "../../../shared/schemas/project";
 
 const TRACK_PALETTE = [
   "#7c5cff",
@@ -40,9 +40,11 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
   const previousSamples = previous?.samples ?? [];
   const fallbackSampleId = previousSamples[0]?.id ?? null;
   const previousSends = new Map<number, number>();
+  const previousPolyphony = new Map<number, Polyphony>();
   for (const track of previous?.tracks ?? []) {
     if (track.midiIndex !== undefined) {
       previousSends.set(track.midiIndex, track.reverbSend);
+      previousPolyphony.set(track.midiIndex, track.polyphony);
     }
   }
 
@@ -85,6 +87,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
         notes,
         dynamics: { volume, expression },
         reverbSend: previousSends.get(midiIndex) ?? 0,
+        polyphony: previousPolyphony.get(midiIndex),
       };
     });
 
