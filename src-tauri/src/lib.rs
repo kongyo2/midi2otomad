@@ -166,7 +166,7 @@ fn probe_media() -> MediaProbe {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_midi(app: AppHandle, previous: Option<Project>) -> Result<Option<ImportResult>, String> {
     let picked = app
         .dialog()
@@ -186,7 +186,7 @@ fn open_midi(app: AppHandle, previous: Option<Project>) -> Result<Option<ImportR
     }))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_audio(app: AppHandle, state: State<AppState>) -> Result<Vec<SampleDto>, String> {
     let picked = app
         .dialog()
@@ -204,7 +204,7 @@ fn open_audio(app: AppHandle, state: State<AppState>) -> Result<Vec<SampleDto>, 
     Ok(samples)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ingest_paths(
     state: State<AppState>,
     paths: Vec<String>,
@@ -232,13 +232,16 @@ fn ingest_paths(
 }
 
 #[tauri::command]
-fn remove_sample(state: State<AppState>, id: String) {
-    if let Ok(mut bank) = state.bank.lock() {
-        bank.remove(&id);
-    }
+fn remove_sample(state: State<AppState>, id: String) -> Result<(), String> {
+    state
+        .bank
+        .lock()
+        .map_err(|_| "バンクのロックに失敗".to_string())?
+        .remove(&id);
+    Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn preview_sample(
     state: State<AppState>,
     sample: Sample,
@@ -286,7 +289,7 @@ fn preview_sample(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_mix(state: State<AppState>, project: Project) -> Result<MixSummary, String> {
     let mix = state.render(&project, MixOptions::default())?;
     load_into_player(&state, &mix);
@@ -347,7 +350,7 @@ pub struct ExportRequest {
     mp3_bitrate: Option<u32>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn export(
     app: AppHandle,
     state: State<AppState>,
@@ -412,6 +415,7 @@ fn encode_mp3_bytes(mix: &MixResult, kbps: u32) -> Result<Vec<u8>, String> {
     )
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
