@@ -47,7 +47,7 @@ export function TrackInspector(): React.JSX.Element {
   const dynamics = track.dynamics;
   const hasExpression = dynamics.expression.length > 0 || dynamics.volume.length > 0;
   const dynamicsHint = !dynamics.enabled
-    ? "🎚 抑揚をオフにして、各ノートのベロシティのみで音量を決めます。"
+    ? "🎚 CC7/CC11 の抑揚カーブをオフにし、各ノートのベロシティのみで音量を決めます。"
     : hasExpression
       ? "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"
       : "🎚 各ノートのベロシティを音量に反映します。";
@@ -150,7 +150,7 @@ export function TrackInspector(): React.JSX.Element {
           checked={dynamics.enabled}
           onChange={(event) => updateTrack(track.id, { dynamics: { ...dynamics, enabled: event.target.checked } })}
         />
-        ベロシティ・エクスプレッションを反映
+        CC7/CC11 の抑揚カーブを反映
       </label>
       <label className="field">
         <span className="field__label">
