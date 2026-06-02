@@ -1,10 +1,5 @@
 # 単体で完結するGUIを備えたMIDI音MAD作成デスクトップアプリ
 
-## 開発スタイル
-
-KPI やカバレッジ目標が与えられたら、達成するまで試行する。
-不明瞭な指示は質問して明確にする。
-
 ## Code Comments Policy
 
 - Do NOT add comments explaining what was changed or why a change was made
