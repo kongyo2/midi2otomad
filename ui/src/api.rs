@@ -35,7 +35,12 @@ async fn invoke_void(cmd: &str, args: JsValue) -> Result<(), String> {
 }
 
 fn to_args(value: &impl Serialize) -> JsValue {
-    serde_wasm_bindgen::to_value(value).unwrap_or(JsValue::NULL)
+    // Tauri の invoke 引数はプレーンな JS オブジェクトを期待する。既定の to_value は
+    // Rust の Map を JS の `Map` にしてしまい note_sample_map などが失われるため、
+    // json 互換シリアライザでオブジェクトとして直列化する。
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .unwrap_or(JsValue::NULL)
 }
 
 // --- DTO ------------------------------------------------------------------
