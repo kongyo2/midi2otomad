@@ -2,7 +2,6 @@
 
 ## 開発スタイル
 
-TDD で開発する（探索 → Red → Green → Refactoring）。
 KPI やカバレッジ目標が与えられたら、達成するまで試行する。
 不明瞭な指示は質問して明確にする。
 
@@ -19,9 +18,3 @@ When fetching web content, try methods in this order. Move to the next if the cu
 1. **WebFetch tool** - Default. Try this first.
 2. **curl fallback** - If WebFetch returns 403, retry with `curl -sL -A "claude-code/1.0" <url>`. Many 403s are caused by Cloudflare blocking the default `Claude-User` User-Agent.
 3. `npx -y @mizchi/readability --format=md "<url>"` — extracts the main content (strips nav/ads/sidebars) and serializes to Markdown.
-
-# 実装の野心
-
-実装には野心とクリエイティビティを発揮してよい。新規タスク (ユーザーがゼロから始めるもの) では特に、自由度を活かして踏み込む。
-
-スコープが曖昧なときも、価値の高いクリエイティブな一手を加える。
