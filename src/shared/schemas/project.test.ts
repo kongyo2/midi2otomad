@@ -311,6 +311,44 @@ describe("track polyphony schema", () => {
   });
 });
 
+describe("output settings schema", () => {
+  it("defaults to an enabled soft limiter and a short trailing tail", () => {
+    const project = parseProject({ version: 1, name: "O" });
+    expect(project.output).toEqual({
+      tailSec: 0.25,
+      limiter: { enabled: true, threshold: 0.8 },
+    });
+  });
+
+  it("preserves an explicitly configured output block", () => {
+    const project = parseProject({
+      version: 1,
+      name: "O",
+      output: { tailSec: 1.5, limiter: { enabled: false, threshold: 0.5 } },
+    });
+    expect(project.output).toEqual({
+      tailSec: 1.5,
+      limiter: { enabled: false, threshold: 0.5 },
+    });
+  });
+
+  it("rejects a limiter threshold below the floor", () => {
+    expect(() => parseProject({ version: 1, name: "x", output: { limiter: { threshold: 0.05 } } })).toThrow();
+  });
+
+  it("rejects a limiter threshold above unity", () => {
+    expect(() => parseProject({ version: 1, name: "x", output: { limiter: { threshold: 1.5 } } })).toThrow();
+  });
+
+  it("rejects a negative trailing tail", () => {
+    expect(() => parseProject({ version: 1, name: "x", output: { tailSec: -1 } })).toThrow();
+  });
+
+  it("rejects a trailing tail beyond the maximum", () => {
+    expect(() => parseProject({ version: 1, name: "x", output: { tailSec: 11 } })).toThrow();
+  });
+});
+
 describe("createEmptyProject", () => {
   it("creates a default-named project", () => {
     const project = createEmptyProject();

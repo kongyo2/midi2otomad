@@ -113,6 +113,19 @@ describe("projectReducer", () => {
     expect(next.reverb.roomSize).toBe(0.9);
   });
 
+  it("patches the output settings and render sample rate", () => {
+    const next = projectReducer(base, {
+      type: "patchProject",
+      patch: {
+        sampleRate: 96000,
+        output: { ...base.output, tailSec: 1.2, limiter: { ...base.output.limiter, enabled: false } },
+      },
+    });
+    expect(next.sampleRate).toBe(96000);
+    expect(next.output.tailSec).toBe(1.2);
+    expect(next.output.limiter.enabled).toBe(false);
+  });
+
   it("adds a sample and optionally assigns it to unassigned tracks", () => {
     const assigned = projectReducer(base, { type: "addSample", sample, assignToTracks: true });
     expect(assigned.samples).toHaveLength(3);
@@ -329,6 +342,32 @@ describe("StudioProvider state", () => {
 
     act(() => {
       result.current.patchProject({ reverb: { ...result.current.project.reverb, enabled: true } });
+    });
+    act(() => {
+      result.current.play();
+    });
+    expect(mocks.mixProject).toHaveBeenCalledTimes(3);
+  });
+
+  it("re-renders the mix when the output settings or sample rate change", () => {
+    const { result } = renderStudio();
+    act(() => {
+      result.current.play();
+    });
+    expect(mocks.mixProject).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.patchProject({
+        output: { ...result.current.project.output, limiter: { enabled: false, threshold: 0.6 } },
+      });
+    });
+    act(() => {
+      result.current.play();
+    });
+    expect(mocks.mixProject).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      result.current.patchProject({ sampleRate: 44100 });
     });
     act(() => {
       result.current.play();

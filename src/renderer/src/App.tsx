@@ -6,6 +6,7 @@ import { SampleInspector } from "./components/SampleInspector";
 import { Timeline } from "./components/Timeline";
 import { TrackInspector } from "./components/TrackInspector";
 import { ReverbPanel } from "./components/ReverbPanel";
+import { OutputPanel } from "./components/OutputPanel";
 import { HelpPanel } from "./components/HelpPanel";
 
 export function App(): React.JSX.Element {
@@ -75,6 +76,7 @@ export function App(): React.JSX.Element {
         <aside className="studio__right">
           <TrackInspector />
           <ReverbPanel />
+          <OutputPanel />
           <HelpPanel />
         </aside>
       </div>

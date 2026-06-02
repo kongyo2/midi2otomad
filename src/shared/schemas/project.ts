@@ -96,6 +96,16 @@ export const PolyphonySchema = z.object({
   stopMode: z.enum(STOP_MODES).default("none"),
 });
 
+export const LimiterSchema = z.object({
+  enabled: z.boolean().default(true),
+  threshold: z.number().min(0.1).max(1).default(0.8),
+});
+
+export const OutputSchema = z.object({
+  tailSec: z.number().min(0).max(10).default(0.25),
+  limiter: LimiterSchema.prefault({}),
+});
+
 export const NoteSchema = z.object({
   pitch: z.number().int().min(0).max(127),
   startSec: z.number().min(0),
@@ -146,6 +156,7 @@ export const ProjectSchema = z.object({
   samples: z.array(SampleSchema).default([]),
   tracks: z.array(TrackSchema).default([]),
   reverb: ReverbSchema.prefault({}),
+  output: OutputSchema.prefault({}),
 });
 
 export type Envelope = z.infer<typeof EnvelopeSchema>;
@@ -156,6 +167,8 @@ export type InterpolationMode = (typeof INTERPOLATION_MODES)[number];
 export type VoicePriority = (typeof VOICE_PRIORITIES)[number];
 export type StopMode = (typeof STOP_MODES)[number];
 export type Polyphony = z.infer<typeof PolyphonySchema>;
+export type Limiter = z.infer<typeof LimiterSchema>;
+export type Output = z.infer<typeof OutputSchema>;
 export type PitchMod = z.infer<typeof PitchModSchema>;
 export type Reverb = z.infer<typeof ReverbSchema>;
 export type Loop = z.infer<typeof LoopSchema>;

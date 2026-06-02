@@ -16,7 +16,10 @@ import { midiToProject } from "../midi/import";
 
 type Action =
   | { type: "setProject"; project: Project }
-  | { type: "patchProject"; patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb">> }
+  | {
+      type: "patchProject";
+      patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb" | "output" | "sampleRate">>;
+    }
   | { type: "addSample"; sample: Sample; assignToTracks: boolean }
   | { type: "updateSample"; id: string; patch: Partial<Sample> }
   | { type: "removeSample"; id: string }
@@ -103,7 +106,9 @@ export interface StudioContextValue {
   ingestAudio: (files: Array<LoadedFile | File>, assignTrackId?: string) => Promise<void>;
   updateSample: (id: string, patch: Partial<Sample>) => void;
   removeSample: (id: string) => void;
-  patchProject: (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb">>) => void;
+  patchProject: (
+    patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb" | "output" | "sampleRate">>,
+  ) => void;
   updateTrack: (id: string, patch: Partial<Track>) => void;
   setNoteSample: (trackId: string, note: number, sampleId: string | null) => void;
   getAudio: (sampleId: string) => PcmAudio | undefined;
@@ -171,7 +176,7 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
     if (!dirtyRef.current) {
       return;
     }
-    engine.setMix(mixProject(projectRef.current, bank, { limiter: true }));
+    engine.setMix(mixProject(projectRef.current, bank));
     dirtyRef.current = false;
   }, [bank, getEngine]);
 
@@ -260,9 +265,15 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
   );
 
   const patchProject = useCallback(
-    (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb">>) => {
+    (patch: Partial<Pick<Project, "name" | "bpm" | "masterGain" | "reverb" | "output" | "sampleRate">>) => {
       dispatch({ type: "patchProject", patch });
-      if (patch.bpm !== undefined || patch.masterGain !== undefined || patch.reverb !== undefined) {
+      if (
+        patch.bpm !== undefined ||
+        patch.masterGain !== undefined ||
+        patch.reverb !== undefined ||
+        patch.output !== undefined ||
+        patch.sampleRate !== undefined
+      ) {
         markDirty();
       }
     },
@@ -328,7 +339,7 @@ export function StudioProvider({ children }: { children: ReactNode }): React.JSX
     async (options: ExportOptions) => {
       setBusy("ミックスを書き出し中…");
       try {
-        const mix = mixProject(projectRef.current, bank, { limiter: true });
+        const mix = mixProject(projectRef.current, bank);
         if (mix.peak < 1e-5) {
           showToast("書き出す音がありません。MIDI と音声素材を読み込んでください。");
           return;
