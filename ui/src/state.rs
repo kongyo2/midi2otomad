@@ -76,6 +76,19 @@ impl Studio {
         ));
     }
 
+    /// 取り込み結果を適用する。ただし呼び出し中（ファイル選択ダイアログやデコード待ち）に
+    /// ユーザー編集が入っていた場合は、古いスナップショット由来の結果で現在の編集を
+    /// 上書きしないよう取り込みを中止する。
+    fn apply_import_guarded(&self, import: ImportResult, edit_gen: u64) {
+        if self.edit_seq.get_untracked() != edit_gen {
+            self.show_toast(
+                "読み込み中に編集があったため取り込みを中止しました。もう一度読み込んでください。",
+            );
+            return;
+        }
+        self.apply_import(import);
+    }
+
     fn apply_samples(&self, samples: Vec<SampleDto>) {
         if samples.is_empty() {
             return;
@@ -110,9 +123,10 @@ impl Studio {
     pub fn open_midi(&self) {
         let this = *self;
         spawn_local(async move {
+            let edit_gen = this.edit_seq.get_untracked();
             let previous = this.snapshot();
             match api::open_midi(&previous).await {
-                Ok(Some(import)) => this.apply_import(import),
+                Ok(Some(import)) => this.apply_import_guarded(import, edit_gen),
                 Ok(None) => {}
                 Err(e) => this.show_toast(format!("MIDI 読み込みに失敗しました: {e}")),
             }
@@ -134,12 +148,13 @@ impl Studio {
     pub fn ingest_dropped(&self, paths: Vec<String>) {
         let this = *self;
         spawn_local(async move {
+            let edit_gen = this.edit_seq.get_untracked();
             this.busy.set(Some("ファイルを読み込み中…".into()));
             let previous = this.snapshot();
             match api::ingest_paths(paths, &previous).await {
                 Ok(result) => {
                     if let Some(import) = result.import {
-                        this.apply_import(import);
+                        this.apply_import_guarded(import, edit_gen);
                     }
                     this.apply_samples(result.samples);
                 }
@@ -150,6 +165,10 @@ impl Studio {
     }
 
     pub fn remove_sample(&self, id: String) {
+        if self.busy.get_untracked().is_some() {
+            self.show_toast("処理中は素材を削除できません");
+            return;
+        }
         let this = *self;
         spawn_local(async move {
             let _ = api::remove_sample(&id).await;

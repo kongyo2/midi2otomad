@@ -5,6 +5,7 @@
 mod player;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,7 @@ const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", 
 pub struct AppState {
     bank: Mutex<HashMap<String, PcmAudio>>,
     player: Option<Player>,
+    render_seq: AtomicU64,
 }
 
 impl AppState {
@@ -42,6 +44,7 @@ impl AppState {
         Self {
             bank: Mutex::new(HashMap::new()),
             player,
+            render_seq: AtomicU64::new(0),
         }
     }
 
@@ -51,6 +54,18 @@ impl AppState {
             .lock()
             .map_err(|_| "バンクのロックに失敗".to_string())?;
         Ok(mix_project(project, &*bank, &options))
+    }
+
+    /// プレイヤーへ載せるレンダリングに新しい世代番号を割り当てる。非同期コマンドが
+    /// 並行・順不同で完了しても、最後に要求されたレンダリングだけが再生バッファへ
+    /// 反映されるようにするための番号。
+    fn next_render_seq(&self) -> u64 {
+        self.render_seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// `seq` がまだ最新世代か（その後に新しいレンダリング要求が来ていないか）。
+    fn is_latest_render(&self, seq: u64) -> bool {
+        self.render_seq.load(Ordering::SeqCst) == seq
     }
 }
 
@@ -272,6 +287,7 @@ fn preview_sample(
             "notes": [{ "pitch": note_pitch, "startSec": 0, "durationSec": duration, "velocity": 127 }]
         }]
     }))?;
+    let seq = state.next_render_seq();
     let mix = state.render(
         &project,
         MixOptions {
@@ -279,21 +295,27 @@ fn preview_sample(
             tail_sec: Some(0.1),
         },
     )?;
-    load_into_player(&state, &mix);
-    if let Some(player) = &state.player {
-        player.play(Some(0.0));
+    if state.is_latest_render(seq) {
+        load_into_player(&state, &mix);
+        if let Some(player) = &state.player {
+            player.play(Some(0.0));
+        }
     }
     Ok(())
 }
 
 #[tauri::command(async)]
 fn set_mix(state: State<AppState>, project: Project) -> Result<MixSummary, String> {
+    let seq = state.next_render_seq();
     let mix = state.render(&project, MixOptions::default())?;
-    load_into_player(&state, &mix);
-    Ok(MixSummary {
+    let summary = MixSummary {
         duration_sec: mix.duration_sec,
         peak: mix.peak,
-    })
+    };
+    if state.is_latest_render(seq) {
+        load_into_player(&state, &mix);
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
