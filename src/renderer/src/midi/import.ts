@@ -31,8 +31,8 @@ export interface MidiImportResult {
 
 /**
  * Parse a MIDI file into a project. The existing sample library, master gain,
- * sample rate and reverb bus are preserved so a user can re-import arrangements
- * without losing their material assignments and mix setup.
+ * sample rate, reverb bus and output settings are preserved so a user can
+ * re-import arrangements without losing their material assignments and mix setup.
  */
 export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Project): MidiImportResult {
   const midi = new Midi(bytes);
@@ -104,6 +104,7 @@ export function midiToProject(bytes: Uint8Array, fileName: string, previous?: Pr
     sampleRate: previous?.sampleRate ?? 48000,
     masterGain: previous?.masterGain ?? 1,
     reverb: previous?.reverb,
+    output: previous?.output,
     tempos,
     samples: previousSamples,
     tracks,
