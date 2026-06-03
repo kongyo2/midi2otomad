@@ -7,7 +7,7 @@
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "cd ui && trunk serve",
-    "beforeBuildCommand": "cd ui && trunk build"
+    "beforeBuildCommand": "cd ui && trunk build --release"
   },
   "app": {
     "withGlobalTauri": true,
