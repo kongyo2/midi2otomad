@@ -514,18 +514,35 @@ fn render_note(
     }
 }
 
+/// タイムストレッチの伸長率 α。無効・ループ時・微小な伸長（素の再生で十分）は `None`。
+/// 会計（`sounding_duration_sec`）と実レンダリング（`build_voice_source`）で同じ判定を共有する。
+fn stretch_alpha(note: &Note, sample: &Sample, src_dur: f64, ratio: f64) -> Option<f64> {
+    if !sample.time_stretch || sample.loop_region.enabled || src_dur <= 0.0 {
+        return None;
+    }
+    let alpha = note.duration_sec * ratio / src_dur;
+    if alpha > STRETCH_MIN {
+        Some(alpha.min(STRETCH_MAX))
+    } else {
+        None
+    }
+}
+
 /// ボイスがスロットを占有する長さ。ボイス上限の会計に使う。ゲート＋リリース尾を上限とし、
-/// ピッチ変調のない非ループ・ワンショットはソース終端までで更に短く見積もる。
+/// ピッチ変調・ベンド・実効タイムストレッチの無い非ループ・ワンショットだけ、ソース終端まで
+/// で更に短く見積もる（変調系はエンベロープがゲート＋リリースで尾を切るためそれを上限とする）。
 fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, track: &Track) -> f64 {
     let gate_plus_release = note.duration_sec + sample.envelope.release_ms / 1000.0;
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
-    let stretched = sample.time_stretch && !sample.loop_region.enabled;
-    if resolve_loop(sample, src).is_some() || pitch_modulated || stretched {
+    let bend_modulated = !track.pitch_bend.is_empty();
+    let ratio = note_ratio(note, sample, track);
+    let src_dur = src.frames as f64 / src.sample_rate;
+    let will_stretch = stretch_alpha(note, sample, src_dur, ratio).is_some();
+    if resolve_loop(sample, src).is_some() || pitch_modulated || bend_modulated || will_stretch {
         return gate_plus_release;
     }
-    let ratio = note_ratio(note, sample, track);
-    let one_shot_sec = src.frames as f64 / src.sample_rate / ratio;
+    let one_shot_sec = src_dur / ratio;
     gate_plus_release.min(one_shot_sec)
 }
 
@@ -580,14 +597,10 @@ fn build_voice_source<'a>(
     if want_stretch {
         let cond_frames = channels.first().map(|c| c.len()).unwrap_or(0);
         let src_dur = cond_frames as f64 / src.sample_rate;
-        if src_dur > 0.0 {
-            let ratio = note_ratio(note, sample, track);
-            let alpha = note.duration_sec * ratio / src_dur;
-            if alpha > STRETCH_MIN {
-                let alpha = alpha.min(STRETCH_MAX);
-                for ch in &mut channels {
-                    *ch = time_stretch(ch, alpha, src.sample_rate);
-                }
+        let ratio = note_ratio(note, sample, track);
+        if let Some(alpha) = stretch_alpha(note, sample, src_dur, ratio) {
+            for ch in &mut channels {
+                *ch = time_stretch(ch, alpha, src.sample_rate);
             }
         }
     }
@@ -2172,5 +2185,82 @@ mod tests {
         assert!(sm.left[500].abs() > 0.5);
         assert!(om.left[500].abs() < 0.01);
         assert!(all_finite(&sm.left));
+    }
+
+    #[test]
+    fn voice_accounting_matches_effective_stretch() {
+        // タイムストレッチ有効でも実際に伸ばすのは α が下限を超えるときだけ。会計も追従させる。
+        let project = make_project(
+            json!([sample_raw(
+                json!({ "timeStretch": true, "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let sample = &project.samples[0];
+        let track = &project.tracks[0];
+        let src = const_source(1.0, 980); // 0.98s @1000
+
+        // ノート長 1.0s, ratio 1 → α≈1.02 ≤ 下限 → 伸ばさない＝ワンショット会計(0.98s)。
+        let short = Note {
+            pitch: 60,
+            start_sec: 0.0,
+            duration_sec: 1.0,
+            velocity: 127,
+        };
+        assert!(close(
+            sounding_duration_sec(&short, sample, &src, track),
+            0.98,
+            6
+        ));
+
+        // ノート長 2.0s → α≈2.04 > 下限 → 伸ばす＝ゲート＋リリース会計(2.0s)。
+        let long = Note {
+            pitch: 60,
+            start_sec: 0.0,
+            duration_sec: 2.0,
+            velocity: 127,
+        };
+        assert!(close(
+            sounding_duration_sec(&long, sample, &src, track),
+            2.0,
+            6
+        ));
+    }
+
+    #[test]
+    fn bend_track_reserves_full_voice_lifetime() {
+        // ピッチベンドのあるトラックは（グライド/ビブラート同様）ゲート＋リリースで会計する。
+        let bent = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(
+                json!({ "pitchBend": [{ "t": 0, "value": -0.5 }] })
+            )]),
+        );
+        let plain = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let src = const_source(1.0, 300); // 0.3s ワンショット @1000
+        let note = Note {
+            pitch: 60,
+            start_sec: 0.0,
+            duration_sec: 1.0,
+            velocity: 127,
+        };
+        // ベンド有り → gate+release(1.0s)、ベンド無し → one-shot 終端(0.3s)。
+        assert!(close(
+            sounding_duration_sec(&note, &bent.samples[0], &src, &bent.tracks[0]),
+            1.0,
+            6
+        ));
+        assert!(close(
+            sounding_duration_sec(&note, &plain.samples[0], &src, &plain.tracks[0]),
+            0.3,
+            6
+        ));
     }
 }

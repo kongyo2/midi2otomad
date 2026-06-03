@@ -140,7 +140,8 @@ pub fn midi_to_project(
         let mut volume: Vec<(u64, f64)> = Vec::new();
         let mut expression: Vec<(u64, f64)> = Vec::new();
         let mut pitch_bend: Vec<(u64, f64)> = Vec::new();
-        let mut percussion = false;
+        let mut has_percussion = false;
+        let mut has_pitched = false;
         let mut active: HashMap<(u8, u8), Vec<(u64, u8)>> = HashMap::new();
 
         for event in track {
@@ -155,7 +156,9 @@ pub fn midi_to_project(
                     MidiMessage::NoteOn { key, vel } => {
                         if vel.as_int() > 0 {
                             if channel.as_int() == 9 {
-                                percussion = true;
+                                has_percussion = true;
+                            } else {
+                                has_pitched = true;
                             }
                             active
                                 .entry((channel.as_int(), key.as_int()))
@@ -200,7 +203,8 @@ pub fn midi_to_project(
                 volume,
                 expression,
                 pitch_bend,
-                percussion,
+                // 全ノートがチャンネル 10 のときだけドラム扱い（混在トラックは固定しない）。
+                percussion: has_percussion && !has_pitched,
             });
         }
     }
@@ -747,6 +751,29 @@ mod tests {
         )
         .unwrap();
         assert!(!melody.project.tracks[0].fixed_pitch);
+    }
+
+    #[test]
+    fn mixed_channel_track_is_not_drums() {
+        // ドラム(ch10)と旋律(ch1)が同一トラックに混在する場合は音程を固定しない。
+        let drum_on = TrackEvent {
+            delta: delta(0),
+            kind: TrackEventKind::Midi {
+                channel: midly::num::u4::new(9),
+                message: MidiMessage::NoteOn {
+                    key: u7::new(38),
+                    vel: u7::new(100),
+                },
+            },
+        };
+        let events = vec![
+            drum_on,
+            note_on(0, 60, 100),
+            note_off(240, 60),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "mix.mid", None).unwrap();
+        assert!(!result.project.tracks[0].fixed_pitch);
     }
 
     #[test]
