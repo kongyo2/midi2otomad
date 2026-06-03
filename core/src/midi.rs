@@ -486,30 +486,34 @@ mod tests {
         );
     }
 
-    fn note_on(tick_delta: u32, key: u8, vel: u8) -> TrackEvent<'static> {
+    fn midi_event(tick_delta: u32, message: MidiMessage) -> TrackEvent<'static> {
         TrackEvent {
             delta: delta(tick_delta),
             kind: TrackEventKind::Midi {
                 channel: 0.into(),
-                message: MidiMessage::NoteOn {
-                    key: u7::new(key),
-                    vel: u7::new(vel),
-                },
+                message,
             },
         }
     }
 
-    fn note_off(tick_delta: u32, key: u8) -> TrackEvent<'static> {
-        TrackEvent {
-            delta: delta(tick_delta),
-            kind: TrackEventKind::Midi {
-                channel: 0.into(),
-                message: MidiMessage::NoteOff {
-                    key: u7::new(key),
-                    vel: u7::new(0),
-                },
+    fn note_on(tick_delta: u32, key: u8, vel: u8) -> TrackEvent<'static> {
+        midi_event(
+            tick_delta,
+            MidiMessage::NoteOn {
+                key: u7::new(key),
+                vel: u7::new(vel),
             },
-        }
+        )
+    }
+
+    fn note_off(tick_delta: u32, key: u8) -> TrackEvent<'static> {
+        midi_event(
+            tick_delta,
+            MidiMessage::NoteOff {
+                key: u7::new(key),
+                vel: u7::new(0),
+            },
+        )
     }
 
     fn end_of_track() -> TrackEvent<'static> {

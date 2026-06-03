@@ -16,30 +16,34 @@ fn delta(d: u32) -> u28 {
     u28::new(d)
 }
 
-fn note_on(d: u32, key: u8, vel: u8) -> TrackEvent<'static> {
+fn midi_event(d: u32, message: MidiMessage) -> TrackEvent<'static> {
     TrackEvent {
         delta: delta(d),
         kind: TrackEventKind::Midi {
             channel: 0.into(),
-            message: MidiMessage::NoteOn {
-                key: u7::new(key),
-                vel: u7::new(vel),
-            },
+            message,
         },
     }
 }
 
-fn note_off(d: u32, key: u8) -> TrackEvent<'static> {
-    TrackEvent {
-        delta: delta(d),
-        kind: TrackEventKind::Midi {
-            channel: 0.into(),
-            message: MidiMessage::NoteOff {
-                key: u7::new(key),
-                vel: u7::new(0),
-            },
+fn note_on(d: u32, key: u8, vel: u8) -> TrackEvent<'static> {
+    midi_event(
+        d,
+        MidiMessage::NoteOn {
+            key: u7::new(key),
+            vel: u7::new(vel),
         },
-    }
+    )
+}
+
+fn note_off(d: u32, key: u8) -> TrackEvent<'static> {
+    midi_event(
+        d,
+        MidiMessage::NoteOff {
+            key: u7::new(key),
+            vel: u7::new(0),
+        },
+    )
 }
 
 fn eot() -> TrackEvent<'static> {

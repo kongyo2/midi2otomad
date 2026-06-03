@@ -1,5 +1,6 @@
 mod api;
 mod components;
+mod enums;
 mod format;
 mod state;
 mod widgets;

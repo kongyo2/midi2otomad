@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{FilterType, InterpolationMode, LfoShape};
 
+use crate::enums::SelectValue;
 use crate::format::format_db;
 use crate::state::{find_sample, Studio};
 use crate::widgets::{range_row, Waveform};
@@ -23,61 +24,6 @@ const SHAPE_OPTIONS: [(&str, &str); 4] = [
     ("square", "矩形"),
     ("saw", "ノコギリ"),
 ];
-
-fn interp_str(m: InterpolationMode) -> &'static str {
-    match m {
-        InterpolationMode::Hermite => "hermite",
-        InterpolationMode::Linear => "linear",
-    }
-}
-
-fn filter_str(t: FilterType) -> &'static str {
-    use FilterType::*;
-    match t {
-        Lowpass => "lowpass",
-        Highpass => "highpass",
-        Bandpass => "bandpass",
-        Notch => "notch",
-        Peaking => "peaking",
-        Lowshelf => "lowshelf",
-        Highshelf => "highshelf",
-        Allpass => "allpass",
-    }
-}
-
-fn parse_filter(v: &str) -> FilterType {
-    use FilterType::*;
-    match v {
-        "highpass" => Highpass,
-        "bandpass" => Bandpass,
-        "notch" => Notch,
-        "peaking" => Peaking,
-        "lowshelf" => Lowshelf,
-        "highshelf" => Highshelf,
-        "allpass" => Allpass,
-        _ => Lowpass,
-    }
-}
-
-fn shape_str(s: LfoShape) -> &'static str {
-    use LfoShape::*;
-    match s {
-        Sine => "sine",
-        Triangle => "triangle",
-        Square => "square",
-        Saw => "saw",
-    }
-}
-
-fn parse_shape(v: &str) -> LfoShape {
-    use LfoShape::*;
-    match v {
-        "triangle" => Triangle,
-        "square" => Square,
-        "saw" => Saw,
-        _ => Sine,
-    }
-}
 
 fn ms(v: f64) -> String {
     format!("{} ms", v as i64)
@@ -288,11 +234,11 @@ pub fn SampleInspector() -> impl IntoView {
                             <select
                                 class="select"
                                 prop:value=move || {
-                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_interp).map(|x| interp_str(x.interpolation)).unwrap_or("hermite"))
+                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_interp).map(|x| x.interpolation.as_value()).unwrap_or("hermite"))
                                 }
                                 on:change=move |ev| {
                                     let v = event_target_value(&ev);
-                                    let m = if v == "linear" { InterpolationMode::Linear } else { InterpolationMode::Hermite };
+                                    let m = InterpolationMode::from_value(&v);
                                     s.update_sample(&id_interp2, move |x| x.interpolation = m);
                                 }
                             >
@@ -333,10 +279,10 @@ pub fn SampleInspector() -> impl IntoView {
                             <select
                                 class="select"
                                 prop:value=move || {
-                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_ftype).map(|x| filter_str(x.filter.kind)).unwrap_or("lowpass"))
+                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_ftype).map(|x| x.filter.kind.as_value()).unwrap_or("lowpass"))
                                 }
                                 on:change=move |ev| {
-                                    let k = parse_filter(&event_target_value(&ev));
+                                    let k = FilterType::from_value(&event_target_value(&ev));
                                     s.update_sample(&id_ftype2, move |x| x.filter.kind = k);
                                 }
                             >
@@ -354,10 +300,10 @@ pub fn SampleInspector() -> impl IntoView {
                             <select
                                 class="select"
                                 prop:value=move || {
-                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_fshape).map(|x| shape_str(x.filter.lfo_shape)).unwrap_or("sine"))
+                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_fshape).map(|x| x.filter.lfo_shape.as_value()).unwrap_or("sine"))
                                 }
                                 on:change=move |ev| {
-                                    let sh = parse_shape(&event_target_value(&ev));
+                                    let sh = LfoShape::from_value(&event_target_value(&ev));
                                     s.update_sample(&id_fshape2, move |x| x.filter.lfo_shape = sh);
                                 }
                             >
@@ -380,10 +326,10 @@ pub fn SampleInspector() -> impl IntoView {
                             <select
                                 class="select"
                                 prop:value=move || {
-                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_vshape).map(|x| shape_str(x.pitch_mod.vibrato_shape)).unwrap_or("sine"))
+                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_vshape).map(|x| x.pitch_mod.vibrato_shape.as_value()).unwrap_or("sine"))
                                 }
                                 on:change=move |ev| {
-                                    let sh = parse_shape(&event_target_value(&ev));
+                                    let sh = LfoShape::from_value(&event_target_value(&ev));
                                     s.update_sample(&id_vshape2, move |x| x.pitch_mod.vibrato_shape = sh);
                                 }
                             >

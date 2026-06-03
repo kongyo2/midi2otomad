@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{StopMode, VoicePriority};
 
+use crate::enums::SelectValue;
 use crate::format::format_db;
 use crate::state::Studio;
 use crate::widgets::range_row;
@@ -19,46 +20,6 @@ const STOP_OPTIONS: [(&str, &str); 4] = [
     ("sample", "同じ素材を停止"),
     ("track", "トラック全体を停止"),
 ];
-
-fn priority_str(p: VoicePriority) -> &'static str {
-    use VoicePriority::*;
-    match p {
-        Newest => "newest",
-        Oldest => "oldest",
-        Highest => "highest",
-        Lowest => "lowest",
-    }
-}
-
-fn parse_priority(v: &str) -> VoicePriority {
-    use VoicePriority::*;
-    match v {
-        "oldest" => Oldest,
-        "highest" => Highest,
-        "lowest" => Lowest,
-        _ => Newest,
-    }
-}
-
-fn stop_str(m: StopMode) -> &'static str {
-    use StopMode::*;
-    match m {
-        None => "none",
-        Pitch => "pitch",
-        Sample => "sample",
-        Track => "track",
-    }
-}
-
-fn parse_stop(v: &str) -> StopMode {
-    use StopMode::*;
-    match v {
-        "pitch" => Pitch,
-        "sample" => Sample,
-        "track" => Track,
-        _ => None,
-    }
-}
 
 fn pan_display(pan: f64) -> String {
     if pan == 0.0 {
@@ -222,9 +183,9 @@ pub fn TrackInspector() -> impl IntoView {
                             <span class="field__label">"優先再生"</span>
                             <select
                                 class="select"
-                                prop:value=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_prio).map(|t| priority_str(t.polyphony.priority)).unwrap_or("newest"))
+                                prop:value=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_prio).map(|t| t.polyphony.priority.as_value()).unwrap_or("newest"))
                                 on:change=move |ev| {
-                                    let p = parse_priority(&event_target_value(&ev));
+                                    let p = VoicePriority::from_value(&event_target_value(&ev));
                                     s.update_track(&id_prio2, move |t| t.polyphony.priority = p);
                                 }
                             >
@@ -235,9 +196,9 @@ pub fn TrackInspector() -> impl IntoView {
                             <span class="field__label">"停止方法"</span>
                             <select
                                 class="select"
-                                prop:value=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_stop).map(|t| stop_str(t.polyphony.stop_mode)).unwrap_or("none"))
+                                prop:value=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_stop).map(|t| t.polyphony.stop_mode.as_value()).unwrap_or("none"))
                                 on:change=move |ev| {
-                                    let m = parse_stop(&event_target_value(&ev));
+                                    let m = StopMode::from_value(&event_target_value(&ev));
                                     s.update_track(&id_stop2, move |t| t.polyphony.stop_mode = m);
                                 }
                             >
