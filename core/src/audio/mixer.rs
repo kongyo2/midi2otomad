@@ -532,27 +532,31 @@ fn plan_track_voices<'a>(
     sample_by_id: &HashMap<&str, &'a Sample>,
     bank: &'a dyn AudioBank,
 ) -> Vec<PlannedVoice<'a>> {
-    let resolved: Vec<(&Note, (&'a Sample, &'a PcmAudio))> = track
+    let resolved: Vec<(&Note, Vec<(&'a Sample, &'a PcmAudio)>)> = track
         .notes
         .iter()
         .filter_map(|note| {
-            resolve_note_source(track, note, sample_by_id, bank).map(|src| (note, src))
+            resolve_note_source(track, note, sample_by_id, bank)
+                .map(|root| (note, collect_sources(root, sample_by_id, bank)))
         })
         .collect();
     let requests: Vec<VoiceRequest> = resolved
         .iter()
-        .map(|(note, (sample, src))| VoiceRequest {
+        .map(|(note, sources)| VoiceRequest {
             pitch: note.pitch,
             start_sec: note.start_sec,
-            duration_sec: sounding_duration_sec(note, sample, src, track.drum_mode),
-            sample_id: sample.id.clone(),
+            duration_sec: sources
+                .iter()
+                .map(|(sample, src)| sounding_duration_sec(note, sample, src, track.drum_mode))
+                .fold(0.0, f64::max),
+            sample_id: sources[0].0.id.clone(),
         })
         .collect();
     allocate_voices(&requests, &track.polyphony)
         .into_iter()
         .map(|alloc| {
-            let (note, root) = resolved[alloc.index];
-            let sources = collect_sources(root, sample_by_id, bank);
+            let note = resolved[alloc.index].0;
+            let sources = resolved[alloc.index].1.clone();
             let cut_sec = if alloc.duration_sec < requests[alloc.index].duration_sec {
                 Some(alloc.duration_sec)
             } else {
@@ -1394,6 +1398,29 @@ mod tests {
         let m = mix(&proj, &two_const_bank(), limiter_off());
         assert!(all_finite(&m.left));
         assert!(close(m.left[100] as f64, 2.0, 4));
+    }
+
+    #[test]
+    fn layered_voice_duration_drives_polyphony() {
+        let project = make_project(
+            json!([
+                sample_raw(
+                    json!({ "id": "s1", "linkIds": ["s2"], "envelope": { "attackMs": 0, "releaseMs": 0 } })
+                ),
+                sample_raw(json!({ "id": "s2", "envelope": { "attackMs": 0, "releaseMs": 800 } }))
+            ]),
+            json!([track_raw(json!({
+                "defaultSampleId": "s1",
+                "polyphony": { "maxVoices": 1, "priority": "oldest", "stopMode": "none" },
+                "notes": [
+                    { "pitch": 60, "startSec": 0.0, "durationSec": 0.05, "velocity": 127 },
+                    { "pitch": 60, "startSec": 0.3, "durationSec": 0.05, "velocity": 127 }
+                ]
+            }))]),
+        );
+        let m = mix(&project, &two_const_bank(), limiter_off());
+        assert!(m.left[20] > 1.5);
+        assert!(m.left[350] < 1.2);
     }
 
     #[test]

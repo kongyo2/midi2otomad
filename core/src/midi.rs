@@ -110,7 +110,7 @@ struct RawNote {
     start_tick: u64,
     end_tick: u64,
     velocity: i32,
-    channel: u8,
+    is_drum: bool,
 }
 
 struct RawTrack {
@@ -121,6 +121,8 @@ struct RawTrack {
     expression: Vec<(u64, f64)>,
     all_drum: bool,
 }
+
+type ActiveNotes = HashMap<(u8, u8), Vec<(u64, u8, bool)>>;
 
 pub fn midi_to_project(
     bytes: &[u8],
@@ -157,7 +159,7 @@ pub fn midi_to_project_with_mode(
         let mut notes: Vec<RawNote> = Vec::new();
         let mut volume: Vec<(u64, f64)> = Vec::new();
         let mut expression: Vec<(u64, f64)> = Vec::new();
-        let mut active: HashMap<(u8, u8), Vec<(u64, u8)>> = HashMap::new();
+        let mut active: ActiveNotes = HashMap::new();
         let mut bank_msb: HashMap<u8, u8> = HashMap::new();
 
         for event in track {
@@ -171,10 +173,13 @@ pub fn midi_to_project_with_mode(
                 TrackEventKind::Midi { channel, message } => match message {
                     MidiMessage::NoteOn { key, vel } => {
                         if vel.as_int() > 0 {
-                            active
-                                .entry((channel.as_int(), key.as_int()))
-                                .or_default()
-                                .push((tick, vel.as_int()));
+                            let ch = channel.as_int();
+                            let is_drum = ch == GM_DRUM_CHANNEL || bank_msb.get(&ch) == Some(&127);
+                            active.entry((ch, key.as_int())).or_default().push((
+                                tick,
+                                vel.as_int(),
+                                is_drum,
+                            ));
                         } else {
                             close_note(
                                 &mut active,
@@ -209,9 +214,7 @@ pub fn midi_to_project_with_mode(
         }
 
         if !notes.is_empty() {
-            let all_drum = notes
-                .iter()
-                .all(|n| n.channel == GM_DRUM_CHANNEL || bank_msb.get(&n.channel) == Some(&127));
+            let all_drum = notes.iter().all(|n| n.is_drum);
             raw_tracks.push(RawTrack {
                 midi_index,
                 name: name.trim().to_string(),
@@ -346,7 +349,7 @@ pub fn midi_to_project_with_mode(
 }
 
 fn close_note(
-    active: &mut HashMap<(u8, u8), Vec<(u64, u8)>>,
+    active: &mut ActiveNotes,
     notes: &mut Vec<RawNote>,
     channel: u8,
     key: u8,
@@ -354,13 +357,13 @@ fn close_note(
 ) {
     if let Some(stack) = active.get_mut(&(channel, key)) {
         if !stack.is_empty() {
-            let (start_tick, velocity) = stack.remove(0);
+            let (start_tick, velocity, is_drum) = stack.remove(0);
             notes.push(RawNote {
                 pitch: key as i32,
                 start_tick,
                 end_tick,
                 velocity: velocity as i32,
-                channel,
+                is_drum,
             });
         }
     }
@@ -756,6 +759,20 @@ mod tests {
         ];
         let r = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
         assert!(r.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn auto_mode_uses_bank_state_at_note_onset() {
+        let events = vec![
+            note_on_ch(0, 3, 60, 100),
+            note_off_ch(240, 3, 60),
+            controller(0, 3, 0, 127),
+            note_on_ch(0, 3, 38, 100),
+            note_off_ch(240, 3, 38),
+            end_of_track(),
+        ];
+        let r = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert!(!r.project.tracks[0].drum_mode);
     }
 
     #[test]

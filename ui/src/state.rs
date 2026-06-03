@@ -182,7 +182,10 @@ impl Studio {
     pub fn detect_pitch(&self, id: String) {
         let this = *self;
         spawn_local(async move {
-            match api::detect_pitch(&id).await {
+            let Some(sample) = this.project.with_untracked(|p| find_sample(p, &id)) else {
+                return;
+            };
+            match api::detect_pitch(&sample).await {
                 Ok(Some(est)) => {
                     this.update_sample(&id, move |s| {
                         s.base_pitch = est.base_pitch.clamp(0, 127);

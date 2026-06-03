@@ -8,7 +8,7 @@ use serde_json::json;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
-use midi2otomad_core::audio::pitch_detect::{detect_fundamental_hz, hz_to_midi, split_midi};
+use midi2otomad_core::audio::pitch_detect::{calibration_for_hz, detect_fundamental_hz};
 use midi2otomad_core::audio::{build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio};
 use midi2otomad_core::id::make_id;
 use midi2otomad_core::media::{decode_audio, encode_wav};
@@ -273,22 +273,38 @@ fn downmix_mono(pcm: &PcmAudio) -> Vec<f32> {
     }
 }
 
+fn trim_region(sample: &Sample, frames: usize, rate: f64) -> (usize, usize) {
+    if !sample.trim.enabled || frames < 2 {
+        return (0, frames);
+    }
+    let start = ((sample.trim.start_sec * rate).floor().max(0.0) as usize).min(frames - 1);
+    let end = if sample.trim.end_sec > sample.trim.start_sec {
+        (sample.trim.end_sec * rate).floor() as usize
+    } else {
+        frames
+    };
+    (start, end.clamp(start + 1, frames))
+}
+
 #[tauri::command]
-fn detect_pitch(state: State<AppState>, id: String) -> Result<Option<PitchEstimate>, String> {
+fn detect_pitch(state: State<AppState>, sample: Sample) -> Result<Option<PitchEstimate>, String> {
     let bank = state
         .bank
         .lock()
         .map_err(|_| "バンクのロックに失敗".to_string())?;
-    let pcm = bank.get(&id).ok_or("素材がデコードされていません")?;
+    let pcm = bank.get(&sample.id).ok_or("素材がデコードされていません")?;
     let mono = downmix_mono(pcm);
-    Ok(detect_fundamental_hz(&mono, pcm.sample_rate).map(|hz| {
-        let (base_pitch, tune_cents) = split_midi(hz_to_midi(hz));
-        PitchEstimate {
-            base_pitch,
-            tune_cents: tune_cents.clamp(-2400.0, 2400.0),
-            hz,
-        }
-    }))
+    let (start, end) = trim_region(&sample, mono.len(), pcm.sample_rate);
+    Ok(
+        detect_fundamental_hz(&mono[start..end], pcm.sample_rate).map(|hz| {
+            let (base_pitch, tune_cents) = calibration_for_hz(hz);
+            PitchEstimate {
+                base_pitch,
+                tune_cents,
+                hz,
+            }
+        }),
+    )
 }
 
 #[tauri::command]
@@ -565,5 +581,32 @@ mod tests {
             frames: 0,
         });
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn trim_region_respects_settings() {
+        use midi2otomad_core::schema::{create_sample, Trim};
+        let with_trim = |enabled: bool, start_sec: f64, end_sec: f64| {
+            let mut s = create_sample("id", "n");
+            s.trim = Trim {
+                enabled,
+                start_sec,
+                end_sec,
+            };
+            s
+        };
+        assert_eq!(
+            trim_region(&with_trim(false, 0.1, 0.5), 1000, 1000.0),
+            (0, 1000)
+        );
+        assert_eq!(
+            trim_region(&with_trim(true, 0.1, 0.5), 1000, 1000.0),
+            (100, 500)
+        );
+        assert_eq!(
+            trim_region(&with_trim(true, 0.2, 0.0), 1000, 1000.0),
+            (200, 1000)
+        );
+        assert_eq!(trim_region(&with_trim(true, 0.0, 0.0), 1, 1000.0), (0, 1));
     }
 }

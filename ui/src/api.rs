@@ -181,8 +181,14 @@ pub async fn remove_sample(id: &str) -> Result<(), String> {
     invoke_void("remove_sample", to_args(&IdArg { id })).await
 }
 
-pub async fn detect_pitch(id: &str) -> Result<Option<PitchEstimate>, String> {
-    invoke("detect_pitch", to_args(&IdArg { id })).await
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectArg<'a> {
+    sample: &'a Sample,
+}
+
+pub async fn detect_pitch(sample: &Sample) -> Result<Option<PitchEstimate>, String> {
+    invoke("detect_pitch", to_args(&DetectArg { sample })).await
 }
 
 pub async fn preview_sample(sample: &Sample, pitch: Option<i32>) -> Result<(), String> {

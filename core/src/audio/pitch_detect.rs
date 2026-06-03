@@ -6,9 +6,20 @@ pub fn hz_to_midi(hz: f64) -> f64 {
     69.0 + 12.0 * (hz / 440.0).log2()
 }
 
+pub fn midi_to_hz(midi: f64) -> f64 {
+    440.0 * 2f64.powf((midi - 69.0) / 12.0)
+}
+
 pub fn split_midi(midi: f64) -> (i32, f64) {
     let rounded = midi.round();
     ((rounded as i32).clamp(0, 127), (midi - rounded) * 100.0)
+}
+
+pub fn calibration_for_hz(hz: f64) -> (i32, f64) {
+    let midi = hz_to_midi(hz);
+    let base = midi.round();
+    let cents = (base - midi) * 100.0;
+    ((base as i32).clamp(0, 127), cents.clamp(-2400.0, 2400.0))
 }
 
 fn onset_index(samples: &[f32], peak: f32) -> usize {
@@ -190,5 +201,27 @@ mod tests {
         assert!((cents + 40.0).abs() < 1e-9);
         assert_eq!(split_midi(-5.0).0, 0);
         assert_eq!(split_midi(200.0).0, 127);
+    }
+
+    #[test]
+    fn midi_to_hz_round_trips() {
+        for midi in [40.0, 60.0, 69.0, 81.0, 60.37] {
+            assert!((hz_to_midi(midi_to_hz(midi)) - midi).abs() < 1e-9);
+        }
+        assert!((midi_to_hz(69.0) - 440.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn calibration_tunes_offset_samples_in_the_correct_direction() {
+        use crate::music::pitch_ratio;
+        let (base, cents) = calibration_for_hz(midi_to_hz(60.25));
+        assert_eq!(base, 60);
+        assert!((cents + 25.0).abs() < 1e-6);
+        let ratio = pitch_ratio(base as f64, base as f64, cents);
+        assert!((ratio - 2f64.powf(-0.25 / 12.0)).abs() < 1e-9);
+
+        let (base, cents) = calibration_for_hz(midi_to_hz(60.6));
+        assert_eq!(base, 61);
+        assert!((cents - 40.0).abs() < 1e-6);
     }
 }
