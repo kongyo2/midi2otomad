@@ -101,23 +101,27 @@ pub fn velocity_to_gain(velocity: f64) -> f64 {
     v.powf(1.35)
 }
 
-fn sample_automation(points: &[AutomationPoint], t: f64) -> f64 {
-    let first = match points.first() {
-        Some(p) => p,
-        None => return 1.0,
-    };
-    if t < first.t {
+/// 自動化点列を時刻 `t` で評価する。`cursor` は線形走査の再開位置を覚えるヒントで、
+/// 単調増加する `t` に対して評価を償却 O(1) にする。返り値は素朴な先頭からの走査と
+/// ビット単位で一致する（`t` 非減少なら走査位置は前方一方向にのみ進む）。
+fn eval_automation(points: &[AutomationPoint], t: f64, cursor: &mut usize) -> f64 {
+    let len = points.len();
+    if len == 0 || t < points[0].t {
         return 1.0;
     }
-    let mut prev = first;
-    for next in &points[1..] {
-        if t < next.t {
-            let span = next.t - prev.t;
-            return prev.v + (next.v - prev.v) * ((t - prev.t) / span);
-        }
-        prev = next;
+    let mut k = (*cursor).max(1);
+    while k < len && points[k].t <= t {
+        k += 1;
     }
-    prev.v
+    *cursor = k;
+    if k >= len {
+        points[len - 1].v
+    } else {
+        let prev = &points[k - 1];
+        let next = &points[k];
+        let span = next.t - prev.t;
+        prev.v + (next.v - prev.v) * ((t - prev.t) / span)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -147,6 +151,17 @@ fn resolve_loop(sample: &Sample, src: &PcmAudio) -> Option<LoopRegion> {
     Some(LoopRegion { start, end, length })
 }
 
+/// f32 を f64 へ広げ、非有限値（NaN/±inf）は 0.0 にそろえる。素材に紛れた異常値を無害化する。
+#[inline]
+fn finite(v: f32) -> f64 {
+    let v = v as f64;
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
+}
+
 fn sample_at(channel: &[f32], frames: usize, index: i64, region: Option<LoopRegion>) -> f64 {
     let idx = match region {
         Some(r) => (r.start + (((index - r.start) % r.length) + r.length) % r.length) as usize,
@@ -160,12 +175,7 @@ fn sample_at(channel: &[f32], frames: usize, index: i64, region: Option<LoopRegi
             }
         }
     };
-    let value = channel[idx.min(channel.len().saturating_sub(1))] as f64;
-    if value.is_finite() {
-        value
-    } else {
-        0.0
-    }
+    finite(channel[idx.min(channel.len().saturating_sub(1))])
 }
 
 fn read_sample(
@@ -181,6 +191,21 @@ fn read_sample(
         let a = sample_at(channel, frames, i0, region);
         let b = sample_at(channel, frames, i0 + 1, region);
         return a + (b - a) * frac;
+    }
+    // 非ループで 4 点すべてが内側なら、境界クランプを省いて直接読む。
+    // 内側 index は `sample_at` が返す値と一致するため結果は不変。
+    if region.is_none() {
+        let m = frames.min(channel.len());
+        if i0 >= 1 && (i0 as usize) + 2 < m {
+            let i = i0 as usize;
+            return super::interpolation::cubic_hermite(
+                finite(channel[i - 1]),
+                finite(channel[i]),
+                finite(channel[i + 1]),
+                finite(channel[i + 2]),
+                frac,
+            );
+        }
     }
     let y0 = sample_at(channel, frames, i0 - 1, region);
     let y1 = sample_at(channel, frames, i0, region);
@@ -222,9 +247,12 @@ fn build_track_dynamics(track: &Track, frames: usize, sample_rate: f64) -> Optio
         return None;
     }
     let mut out = vec![0.0f32; frames];
+    let mut volume_cursor = 1usize;
+    let mut expression_cursor = 1usize;
     for (i, slot) in out.iter_mut().enumerate() {
         let t = i as f64 / sample_rate;
-        *slot = (sample_automation(volume, t) * sample_automation(expression, t)) as f32;
+        *slot = (eval_automation(volume, t, &mut volume_cursor)
+            * eval_automation(expression, t, &mut expression_cursor)) as f32;
     }
     Some(out)
 }
@@ -280,6 +308,7 @@ fn render_note(
         None => return,
     };
     let ch1 = src.channels.get(1).map(|c| c.as_slice()).unwrap_or(ch0);
+    let mono = src.channels.len() < 2;
 
     let filter = &sample.filter;
     let filter_modulated = filter.enabled && (filter.env_amount != 0.0 || filter.lfo_depth != 0.0);
@@ -299,6 +328,11 @@ fn render_note(
     let mut state_r = create_biquad_state();
     let reverb_send = track.reverb_send;
 
+    // ピッチ変調が無ければ増分は一定。毎サンプルの pitch_offset/LFO 評価を省ける
+    // （変調無し時は semitones_to_ratio(0) == 1.0 なので結果は不変）。
+    let pitch_modulated =
+        sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
+
     let mut src_pos = 0.0;
     for i in 0..voice_frames {
         let out_idx = start_frame + i;
@@ -306,8 +340,11 @@ fn render_note(
         if t_sec >= cut_end_sec {
             break;
         }
-        let increment =
-            base_increment * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t_sec));
+        let increment = if pitch_modulated {
+            base_increment * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t_sec))
+        } else {
+            base_increment
+        };
         if out_idx < 0 {
             src_pos += increment;
             continue;
@@ -333,23 +370,42 @@ fn render_note(
 
         if alive {
             let env = envelope_level(&sample.envelope, t_sec, gate_sec);
-            let mut s_l = read_sample(ch0, src.frames, pos, hermite, region);
-            let mut s_r = read_sample(ch1, src.frames, pos, hermite, region);
-            if filter.enabled {
-                let coeffs = if filter_modulated {
-                    design_biquad(
+            let coeffs = if filter.enabled {
+                if filter_modulated {
+                    Some(design_biquad(
                         filter.kind,
                         modulated_cutoff(filter, env, t_sec, nyquist),
                         out_rate,
                         filter.q,
                         filter.gain_db,
-                    )
+                    ))
                 } else {
-                    unwrap_coeffs(&static_coeffs)
-                };
-                s_l = process_biquad_sample(&coeffs, &mut state_l, s_l);
-                s_r = process_biquad_sample(&coeffs, &mut state_r, s_r);
-            }
+                    static_coeffs
+                }
+            } else {
+                None
+            };
+            // サンプルは「フィルタ状態の維持」か「出力(env>0)」のどちらかに必要なときだけ読む。
+            // フィルタ無効かつ無音(env==0)の区間は読み出しごと省ける（結果は不変）。
+            let need_sample = coeffs.is_some() || env > 0.0;
+            // モノラル素材は左右で同じサンプル・同じフィルタ状態をたどるので一度だけ計算する。
+            let (s_l, s_r) = if !need_sample {
+                (0.0, 0.0)
+            } else if mono {
+                let mut s = read_sample(ch0, src.frames, pos, hermite, region);
+                if let Some(c) = coeffs {
+                    s = process_biquad_sample(&c, &mut state_l, s);
+                }
+                (s, s)
+            } else {
+                let mut s_l = read_sample(ch0, src.frames, pos, hermite, region);
+                let mut s_r = read_sample(ch1, src.frames, pos, hermite, region);
+                if let Some(c) = coeffs {
+                    s_l = process_biquad_sample(&c, &mut state_l, s_l);
+                    s_r = process_biquad_sample(&c, &mut state_r, s_r);
+                }
+                (s_l, s_r)
+            };
             if env > 0.0 {
                 let cut_gain = match cut_sec {
                     Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
@@ -375,10 +431,6 @@ fn render_note(
 
         src_pos += increment;
     }
-}
-
-fn unwrap_coeffs(c: &Option<BiquadCoeffs>) -> BiquadCoeffs {
-    c.expect("static filter coefficients are present when the filter is enabled and unmodulated")
 }
 
 /// ボイスがスロットを占有する長さ。ボイス上限の会計に使う。ゲート＋リリース尾を上限とし、
@@ -509,9 +561,11 @@ fn apply_reverb(
         },
     );
     let wet = verb.process_block(send_l, send_r);
-    for i in 0..left.len() {
-        left[i] = (left[i] as f64 + wet.left[i] as f64) as f32;
-        right[i] = (right[i] as f64 + wet.right[i] as f64) as f32;
+    for (o, w) in left.iter_mut().zip(wet.left.iter()) {
+        *o = (*o as f64 + *w as f64) as f32;
+    }
+    for (o, w) in right.iter_mut().zip(wet.right.iter()) {
+        *o = (*o as f64 + *w as f64) as f32;
     }
 }
 
@@ -593,8 +647,8 @@ pub fn mix_project<'a>(
     }
 
     let mut peak = 0.0;
-    for i in 0..frames {
-        let m = (left[i] as f64).abs().max((right[i] as f64).abs());
+    for (l, r) in left.iter().zip(right.iter()) {
+        let m = (*l as f64).abs().max((*r as f64).abs());
         if m > peak {
             peak = m;
         }
@@ -602,9 +656,11 @@ pub fn mix_project<'a>(
 
     if options.limiter.unwrap_or(project.output.limiter.enabled) {
         let threshold = project.output.limiter.threshold;
-        for i in 0..frames {
-            left[i] = soft_clip(left[i] as f64, threshold) as f32;
-            right[i] = soft_clip(right[i] as f64, threshold) as f32;
+        for s in left.iter_mut() {
+            *s = soft_clip(*s as f64, threshold) as f32;
+        }
+        for s in right.iter_mut() {
+            *s = soft_clip(*s as f64, threshold) as f32;
         }
     }
 
