@@ -1,6 +1,3 @@
-//! オフラインミキサー。プロジェクトとデコード済み音声バンクを受け取り、
-//! 1 本のステレオミックスにレンダリングする。再生・書き出し・試聴はすべてこの関数を通る。
-
 use super::envelope::envelope_level;
 use super::filter::{create_biquad_state, design_biquad, process_biquad_sample, BiquadCoeffs};
 use super::lfo::lfo_value;
@@ -11,7 +8,6 @@ use crate::music::{pitch_ratio, semitones_to_ratio};
 use crate::schema::{AutomationPoint, Filter, InterpolationMode, Note, Project, Sample, Track};
 use std::collections::HashMap;
 
-/// デコード済みの素材音声。チャンネルごとに 1 本の `Vec<f32>`、長さはすべて同じ。
 #[derive(Debug, Clone)]
 pub struct PcmAudio {
     pub sample_rate: f64,
@@ -29,7 +25,6 @@ impl PcmAudio {
     }
 }
 
-/// 波形サムネイル描画用の、ダウンサンプルした振幅エンベロープ。
 pub fn build_waveform_peaks(pcm: &PcmAudio, buckets: usize) -> Vec<f32> {
     let mut peaks = vec![0.0f32; buckets];
     let channel = match pcm.channels.first() {
@@ -52,7 +47,6 @@ pub fn build_waveform_peaks(pcm: &PcmAudio, buckets: usize) -> Vec<f32> {
     peaks
 }
 
-/// 素材 ID からデコード済み音声を引く。
 pub trait AudioBank {
     fn get(&self, id: &str) -> Option<&PcmAudio>;
 }
@@ -63,7 +57,6 @@ impl AudioBank for HashMap<String, PcmAudio> {
     }
 }
 
-/// `HashMap<String, PcmAudio>` を `AudioBank` として包む薄いラッパー。
 pub struct MapBank(pub HashMap<String, PcmAudio>);
 
 impl AudioBank for MapBank {
@@ -84,16 +77,12 @@ pub struct MixResult {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MixOptions {
-    /// 最後に鳴る素材の後ろに付ける無音（秒）をプロジェクト設定より優先して指定。
     pub tail_sec: Option<f64>,
-    /// マスターリミッターの有効/無効をプロジェクト設定より優先して指定。
     pub limiter: Option<bool>,
 }
 
 const MIN_FRAMES: usize = 1;
 
-/// アロケータが途中で切ったボイス（ボイス上限超過・停止グループによるチョーク）に
-/// 適用する短いリリース。クリックを避けつつ、解放したスロットがほぼ即座に黙るよう短い。
 const CHOKE_RELEASE_MS: f64 = 5.0;
 
 pub fn velocity_to_gain(velocity: f64) -> f64 {
@@ -101,9 +90,6 @@ pub fn velocity_to_gain(velocity: f64) -> f64 {
     v.powf(1.35)
 }
 
-/// 自動化点列を時刻 `t` で評価する。`cursor` は線形走査の再開位置を覚えるヒントで、
-/// 単調増加する `t` に対して評価を償却 O(1) にする。返り値は素朴な先頭からの走査と
-/// ビット単位で一致する（`t` 非減少なら走査位置は前方一方向にのみ進む）。
 fn eval_automation(points: &[AutomationPoint], t: f64, cursor: &mut usize) -> f64 {
     let len = points.len();
     if len == 0 || t < points[0].t {
@@ -151,7 +137,6 @@ fn resolve_loop(sample: &Sample, src: &PcmAudio) -> Option<LoopRegion> {
     Some(LoopRegion { start, end, length })
 }
 
-/// f32 を f64 へ広げ、非有限値（NaN/±inf）は 0.0 にそろえる。素材に紛れた異常値を無害化する。
 #[inline]
 fn finite(v: f32) -> f64 {
     let v = v as f64;
@@ -192,8 +177,6 @@ fn read_sample(
         let b = sample_at(channel, frames, i0 + 1, region);
         return a + (b - a) * frac;
     }
-    // 非ループで 4 点すべてが内側なら、境界クランプを省いて直接読む。
-    // 内側 index は `sample_at` が返す値と一致するため結果は不変。
     if region.is_none() {
         let m = frames.min(channel.len());
         if i0 >= 1 && (i0 as usize) + 2 < m {
@@ -328,8 +311,6 @@ fn render_note(
     let mut state_r = create_biquad_state();
     let reverb_send = track.reverb_send;
 
-    // ピッチ変調が無ければ増分は一定。毎サンプルの pitch_offset/LFO 評価を省ける
-    // （変調無し時は semitones_to_ratio(0) == 1.0 なので結果は不変）。
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
 
@@ -385,10 +366,7 @@ fn render_note(
             } else {
                 None
             };
-            // サンプルは「フィルタ状態の維持」か「出力(env>0)」のどちらかに必要なときだけ読む。
-            // フィルタ無効かつ無音(env==0)の区間は読み出しごと省ける（結果は不変）。
             let need_sample = coeffs.is_some() || env > 0.0;
-            // モノラル素材は左右で同じサンプル・同じフィルタ状態をたどるので一度だけ計算する。
             let (s_l, s_r) = if !need_sample {
                 (0.0, 0.0)
             } else if mono {
@@ -433,8 +411,6 @@ fn render_note(
     }
 }
 
-/// ボイスがスロットを占有する長さ。ボイス上限の会計に使う。ゲート＋リリース尾を上限とし、
-/// ピッチ変調のない非ループ・ワンショットはソース終端までで更に短く見積もる。
 fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
     let gate_plus_release = note.duration_sec + sample.envelope.release_ms / 1000.0;
     let pitch_modulated =
@@ -1632,7 +1608,6 @@ mod tests {
         };
         assert_eq!(build_waveform_peaks(&silent, 4), vec![0.0f32; 4]);
 
-        // バケット数がフレーム数より多くても落ちない。
         let pcm = const_source(0.7, 3);
         let peaks = build_waveform_peaks(&pcm, 16);
         assert_eq!(peaks.len(), 16);
@@ -1701,13 +1676,11 @@ mod tests {
             &bank1("s1", const_source(0.4, 1000)),
             limiter_off(),
         );
-        // 2 トラックが同じ素材を重ねるので約 0.8。
         assert!(close(m.left[100] as f64, 0.8, 4));
     }
 
     #[test]
     fn peak_is_measured_before_limiter() {
-        // 3 音を重ねるとサム 3.0。peak は素の値、出力はソフトクリップ後。
         let chord = json!([
             { "pitch": 60, "startSec": 0, "durationSec": 1, "velocity": 127 },
             { "pitch": 60, "startSec": 0, "durationSec": 1, "velocity": 127 },
@@ -1727,15 +1700,13 @@ mod tests {
                 limiter: Some(true),
             },
         );
-        assert!(m.peak > 2.9); // 素のサム ≈ 3.0
-        assert!(max_abs(&m.left) <= 1.0); // ソフトクリップの天井は 1.0
-        assert!((m.peak as f32) > max_abs(&m.left) * 2.5); // peak はリミッター前の値
+        assert!(m.peak > 2.9);
+        assert!(max_abs(&m.left) <= 1.0);
+        assert!((m.peak as f32) > max_abs(&m.left) * 2.5);
     }
 
     #[test]
     fn source_rate_differs_from_project_rate() {
-        // 2000Hz 録音を 1000Hz プロジェクトで base_pitch==pitch で再生。
-        // 増分は src/out=2 となり、ソースを 2 倍速で読む（=録音時の自然な音程）。
         let ch: Vec<f32> = (0..2000)
             .map(|i| ((i as f64) * 0.05).sin() as f32 * 0.5)
             .collect();

@@ -1,8 +1,3 @@
-//! 4 点 3 次エルミート補間（Catmull-Rom 形）。
-
-/// 等間隔の 4 サンプル `y0..y3` を与え、内側の `y1`(t=0)・`y2`(t=1) 間の分数位置
-/// `t` における補間値を返す。内側点の接線を中央差分で推定し、2 次までの多項式を
-/// 正確に再現する。ピッチシフト時のリサンプリングで線形補間より滑らか。
 pub fn cubic_hermite(y0: f64, y1: f64, y2: f64, y3: f64, t: f64) -> f64 {
     let m1 = (y2 - y0) * 0.5;
     let m2 = (y3 - y1) * 0.5;
@@ -58,7 +53,6 @@ mod tests {
 
     #[test]
     fn reproduces_line_across_many_t() {
-        // 等差数列（直線）は内部のどの t でも直線上に乗る。
         for i in 0..=10 {
             let t = i as f64 / 10.0;
             assert!(close(
@@ -71,13 +65,11 @@ mod tests {
 
     #[test]
     fn symmetric_step_is_midpoint() {
-        // 対称な段差 0,0,1,1 の中央は 0.5。
         assert!(close(cubic_hermite(0.0, 0.0, 1.0, 1.0, 0.5), 0.5, 12));
     }
 
     #[test]
     fn tangent_matches_central_difference_at_t0() {
-        // t=0 での数値微分が内側点の中央差分接線 (y2-y0)/2 に一致する。
         let (y0, y1, y2, y3) = (1.0, 2.0, 5.0, 4.0);
         let h = 1e-6;
         let slope = (cubic_hermite(y0, y1, y2, y3, h) - y1) / h;

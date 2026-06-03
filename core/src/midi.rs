@@ -1,7 +1,3 @@
-//! MIDI 取り込み。`midly` で SMF を解析し、トラック・ノート・テンポ・コントロールチェンジ
-//! (CC7 ボリューム / CC11 エクスプレッション) をプロジェクトへ変換する。既存プロジェクトを
-//! 渡すと素材ライブラリ・マスター設定・リバーブ送り・ポリフォニーを引き継ぐ。
-
 use crate::schema::{
     AutomationPoint, Note, Polyphony, Project, Sample, Tempo, Track, TrackDynamics,
 };
@@ -13,7 +9,7 @@ const TRACK_PALETTE: [&str; 10] = [
     "#a3e635", "#fb7185",
 ];
 
-const DEFAULT_TEMPO_US: u32 = 500_000; // 120 BPM
+const DEFAULT_TEMPO_US: u32 = 500_000;
 
 pub struct MidiImportResult {
     pub project: Project,
@@ -36,12 +32,9 @@ fn strip_extension(file_name: &str) -> String {
     }
 }
 
-/// 絶対 tick を秒へ変換するテンポマップ。
 struct TimeMap {
     ppq: f64,
-    /// (tick, 累積秒, このセグメントの µs/四分音符) を tick 昇順で。
     segments: Vec<(u64, f64, f64)>,
-    /// タイムコード時の 1 秒あたり tick 数（Metrical のときは None）。
     ticks_per_second: Option<f64>,
 }
 
@@ -56,7 +49,6 @@ impl TimeMap {
                 for &(tick, us) in &changes {
                     let (last_tick, last_sec, last_us) = *segments.last().unwrap();
                     let sec = if tick <= last_tick {
-                        // 同一 tick での再設定はテンポのみ更新。
                         segments.last_mut().unwrap().2 = us as f64;
                         continue;
                     } else {
@@ -116,7 +108,6 @@ pub fn midi_to_project(
 ) -> Result<MidiImportResult, String> {
     let smf = Smf::parse(bytes).map_err(|e| format!("MIDI の解析に失敗しました: {e}"))?;
 
-    // 1. テンポ変化を全トラックから絶対 tick で集める。
     let mut tempo_changes: Vec<(u64, u32)> = Vec::new();
     for track in &smf.tracks {
         let mut tick: u64 = 0;
@@ -129,7 +120,6 @@ pub fn midi_to_project(
     }
     let time_map = TimeMap::new(&smf.header.timing, &tempo_changes);
 
-    // 2. 各トラックからノートと CC を抽出。
     let mut raw_tracks: Vec<RawTrack> = Vec::new();
     for (midi_index, track) in smf.tracks.iter().enumerate() {
         let mut tick: u64 = 0;
@@ -195,7 +185,6 @@ pub fn midi_to_project(
         }
     }
 
-    // 3. 前プロジェクトからの引き継ぎ。
     let previous_samples: Vec<Sample> = previous.map(|p| p.samples.clone()).unwrap_or_default();
     let fallback_sample_id = previous_samples.first().map(|s| s.id.clone());
     let mut previous_sends: HashMap<usize, f64> = HashMap::new();
@@ -209,7 +198,6 @@ pub fn midi_to_project(
         }
     }
 
-    // 4. プロジェクトのトラックを構築。
     let mut note_count = 0;
     let tracks: Vec<Track> = raw_tracks
         .into_iter()
@@ -269,7 +257,6 @@ pub fn midi_to_project(
         })
         .collect();
 
-    // 5. テンポ配列。
     let tempos: Vec<Tempo> = tempo_changes
         .iter()
         .map(|&(tick, us)| Tempo {
@@ -357,7 +344,6 @@ mod tests {
 
     #[test]
     fn imports_notes_and_tempo() {
-        // 120 BPM (500000 µs/beat), 480 ppq → 1 beat = 0.5s. ノート: tick0→480 (0.5s) と tick480→960.
         let events = vec![
             TrackEvent {
                 delta: delta(0),
@@ -525,11 +511,7 @@ mod tests {
 
     #[test]
     fn velocity_zero_note_on_acts_as_note_off() {
-        let events = vec![
-            note_on(0, 60, 100),
-            note_on(480, 60, 0), // velocity 0 = note off
-            end_of_track(),
-        ];
+        let events = vec![note_on(0, 60, 100), note_on(480, 60, 0), end_of_track()];
         let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
         assert_eq!(result.note_count, 1);
         let note = &result.project.tracks[0].notes[0];
@@ -550,11 +532,11 @@ mod tests {
             },
         };
         let events = vec![
-            cc(0, 7, 127), // volume full
-            cc(0, 11, 64), // expression ~half
+            cc(0, 7, 127),
+            cc(0, 11, 64),
             note_on(0, 60, 100),
             note_off(480, 60),
-            cc(0, 7, 0), // volume zero
+            cc(0, 7, 0),
             end_of_track(),
         ];
         let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
@@ -571,16 +553,16 @@ mod tests {
         let events = vec![
             TrackEvent {
                 delta: delta(0),
-                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(500_000))), // 120 BPM
+                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(500_000))),
             },
             note_on(0, 60, 100),
-            note_off(480, 60), // 1 beat @120 = 0.5s
+            note_off(480, 60),
             TrackEvent {
                 delta: delta(0),
-                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(250_000))), // 240 BPM
+                kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(250_000))),
             },
             note_on(0, 64, 100),
-            note_off(480, 64), // 1 beat @240 = 0.25s
+            note_off(480, 64),
             end_of_track(),
         ];
         let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
@@ -596,7 +578,6 @@ mod tests {
 
     #[test]
     fn unclosed_notes_are_dropped() {
-        // NoteOff が来ないノートは active のまま追加されず、トラックごと消える。
         let events = vec![note_on(0, 60, 100), end_of_track()];
         let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
         assert_eq!(result.track_count, 0);
@@ -605,7 +586,6 @@ mod tests {
 
     #[test]
     fn clamps_very_short_notes_to_minimum_duration() {
-        // tick 0→1 のごく短いノートは下限 0.02 秒へ。
         let events = vec![note_on(0, 60, 100), note_off(1, 60), end_of_track()];
         let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
         assert!((result.project.tracks[0].notes[0].duration_sec - 0.02).abs() < 1e-9);
@@ -664,7 +644,6 @@ mod tests {
             None,
         )
         .unwrap();
-        // 最初のトラックはパレット先頭色。
         assert_eq!(result.project.tracks[0].color, TRACK_PALETTE[0]);
     }
 }

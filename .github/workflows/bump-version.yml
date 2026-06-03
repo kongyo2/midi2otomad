@@ -58,7 +58,6 @@ jobs:
           fi
           sed -i "0,/^version = \".*\"/s//version = \"${new}\"/" Cargo.toml
           sed -i "s/\"version\": \".*\"/\"version\": \"${new}\"/" src-tauri/tauri.conf.json
-          # ワークスペースのバージョンに合わせて Cargo.lock も更新（依存は据え置き）。
           cargo update --workspace
           echo "version=${new}" >> "${GITHUB_OUTPUT}"
 

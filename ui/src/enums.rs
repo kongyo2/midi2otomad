@@ -1,6 +1,3 @@
-//! 設定列挙子と `<select>` の文字列値との相互変換。文字列は core の serde 表現
-//! （`rename_all = "lowercase"`）に一致し、未知の値は各列挙子の既定値へ落ちる。
-
 use midi2otomad_core::schema::{FilterType, InterpolationMode, LfoShape, StopMode, VoicePriority};
 
 pub trait SelectValue: Copy + Default {

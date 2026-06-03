@@ -1,18 +1,3 @@
-// Headless UI driver for the midi2otomad Leptos frontend.
-//
-// It serves the built `ui/dist` over HTTP, opens it in Playwright Chromium with
-// a `window.__TAURI__` shim injected before the WASM boots (the real app gets
-// that object from the Tauri runtime; in a plain browser we fake it), and drives
-// real clicks against the actual Leptos DOM. The backend (file dialogs, cpal,
-// mixing) is mocked — this covers UI/component PRs fast and headlessly. For the
-// real integrated binary use launch-tauri.sh; for DSP/MIDI logic use cargo test.
-//
-// Run:  NODE_PATH="$(npm root -g)" node driver.mjs <cmd> [args]
-//   shot [out.png]         initial render -> screenshot
-//   flow [outDir]          load MIDI, add sample, toggle reverb -> 3 screenshots
-//   repl                   stdin commands: shot <f> | click <text> | sel <css>
-//                          | eval <js> | text <css> | wait <ms> | quit
-//   eval '<js>'            evaluate JS in the page, print JSON result
 import http from "node:http";
 import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { join, resolve, sep, extname, dirname } from "node:path";
@@ -28,8 +13,6 @@ const DIST = join(ROOT, "ui", "dist");
 const SHOTS = process.env.M2O_SHOTS || "/tmp/m2o-shots";
 mkdirSync(SHOTS, { recursive: true });
 
-// Uncaught exceptions in the page (e.g. a Rust panic via console_error_panic_hook)
-// must fail the run, not just print — otherwise shot/flow pass on a UI regression.
 const pageErrors = [];
 
 const MIME = {
@@ -46,7 +29,7 @@ function serveDist() {
     let p = decodeURIComponent(req.url.split("?")[0]);
     if (p === "/" || p === "") p = "/index.html";
     const file = resolve(DIST, "." + p);
-    if (!file.startsWith(DIST + sep)) { res.writeHead(403); res.end(); return; } // no traversal out of dist
+    if (!file.startsWith(DIST + sep)) { res.writeHead(403); res.end(); return; }
     if (!existsSync(file) || !statSync(file).isFile()) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream" });
     res.end(readFileSync(file));
@@ -54,7 +37,6 @@ function serveDist() {
   return new Promise((r) => server.listen(0, "127.0.0.1", () => r(server)));
 }
 
-// Canned data for the mocked backend. Matches the C-E-G fixture melody.
 const peaks = Array.from({ length: 600 }, (_, i) =>
   Math.abs(Math.sin(i / 18)) * Math.max(0.12, 1 - i / 600));
 const toneDto = { id: "sample-1", name: "tone", fileName: "tone.wav", durationSec: 0.4, peaks };
@@ -85,9 +67,8 @@ window.__TAURI__ = {
         case 'export': return { path: '/tmp/otomad.wav', bytes: 288044, durationSec: 1.5 };
         case 'play': case 'pause': case 'stop':
         case 'seek': case 'remove_sample': case 'preview_sample':
-          return null; // known void commands
+          return null;
         default:
-          // A command the mock doesn't know = broken/renamed backend wiring.
           window.__m2o.unexpected.push(cmd);
           return null;
       }
@@ -108,7 +89,7 @@ async function open() {
   await page.addInitScript(SHIM);
   await page.goto(`http://127.0.0.1:${port}/`);
   await page.waitForSelector(".studio", { timeout: 15000 });
-  await page.waitForTimeout(400); // let the first status poll settle
+  await page.waitForTimeout(400);
   return { browser, server, page };
 }
 const shot = (page, f) => page.screenshot({ path: f.includes("/") ? f : join(SHOTS, f) });

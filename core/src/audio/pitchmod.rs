@@ -1,5 +1,3 @@
-//! 時間変化するピッチモジュレーション（半音単位）。一発のグライドとビブラート LFO を合成。
-
 use super::curve::shape_curve;
 use super::lfo::lfo_value;
 use crate::schema::PitchMod;
@@ -37,7 +35,6 @@ fn vibrato_offset(params: &PitchMod, t: f64) -> f64 {
     depth_semitones * fade * lfo_value(params.vibrato_shape, t * params.vibrato_hz)
 }
 
-/// 時刻 `t`（ノートオンからの秒）におけるピッチオフセット（半音）。
 pub fn pitch_offset_semitones(params: &PitchMod, t: f64) -> f64 {
     glide_offset(params, t) + vibrato_offset(params, t)
 }
@@ -170,24 +167,21 @@ mod tests {
     #[test]
     fn square_vibrato_jumps_between_extremes() {
         let params = mod_params(|p| {
-            p.vibrato_cents = 100.0; // 深さ 1 半音
+            p.vibrato_cents = 100.0;
             p.vibrato_hz = 5.0;
             p.vibrato_shape = LfoShape::Square;
         });
-        // 位相 phase = t * hz。t=0.05 → phase 0.25 (<0.5) → +1。
         assert!(close(pitch_offset_semitones(&params, 0.05), 1.0, 9));
-        // t=0.15 → phase 0.75 (>=0.5) → -1。
         assert!(close(pitch_offset_semitones(&params, 0.15), -1.0, 9));
     }
 
     #[test]
     fn vibrato_fully_engaged_after_fade() {
         let params = mod_params(|p| {
-            p.vibrato_cents = 200.0; // 深さ 2 半音
+            p.vibrato_cents = 200.0;
             p.vibrato_hz = 5.0;
             p.vibrato_fade_ms = 50.0;
         });
-        // フェード (50ms) を過ぎた t=0.05 はフェード係数 1.0。phase 0.25 → sin=+1。
         assert!(close(pitch_offset_semitones(&params, 0.05), 2.0, 6));
     }
 

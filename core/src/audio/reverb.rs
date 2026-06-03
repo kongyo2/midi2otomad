@@ -1,20 +1,10 @@
-//! Freeverb（Jezar のパブリックドメイン Schroeder/Moorer リバーブ）の忠実な移植。
-//! 8 個の減衰コムフィルターを並列に通し、4 個の直列オールパスで拡散する。左右独立に
-//! 走らせ、わずかな遅延差でステレオ感を作る。前段のプリディレイ線が尾部を後ろへ押す。
-
 #[derive(Debug, Clone, Copy)]
 pub struct ReverbParams {
-    /// 尾の長さ 0..1。コムのフィードバックを 0.7〜0.98 に対応させる。
     pub room_size: f64,
-    /// 尾の高域吸収 0..1。
     pub damping: f64,
-    /// ウェット信号のステレオ幅 0(モノ)..1(全開)。
     pub width: f64,
-    /// ウェット（残響）レベル。
     pub wet: f64,
-    /// ドライ（未処理）レベル。
     pub dry: f64,
-    /// 尾が始まるまでの遅延（ミリ秒）。
     pub pre_delay_ms: f64,
 }
 
@@ -189,8 +179,6 @@ fn longest_comb_seconds() -> f64 {
     (COMB_TUNINGS[COMB_TUNINGS.len() - 1] + STEREO_SPREAD) as f64 / 44100.0
 }
 
-/// リバーブ尾部が約 -60 dB まで減衰するおおよその秒数。ミキサーがバッファ長を
-/// 確保するために使う。
 pub fn reverb_decay_seconds(room_size: f64) -> f64 {
     let feedback = room_size * SCALE_ROOM + OFFSET_ROOM;
     (longest_comb_seconds() * SILENCE_THRESHOLD.ln()) / feedback.ln()
@@ -350,15 +338,12 @@ mod tests {
             let out = create_reverb(rate, rev(|p| p.room_size = 0.7))
                 .process_block(&impulse(8000), &impulse(8000));
             assert!(out.left.iter().all(|v| v.is_finite()));
-            // 残響が立ち上がってエネルギーを持つ。
             assert!(energy(&out.left, 0, 8000) > 0.0);
         }
     }
 
     #[test]
     fn zero_pre_delay_has_no_extra_latency() {
-        // pre_delay_ms=0 では遅延線を挟まないので、オンセットは最短コム遅延付近
-        // （44100 基準 1116 サンプルを 48k へスケールした ~1215）に現れる。
         let out = create_reverb(FS, rev(|p| p.pre_delay_ms = 0.0))
             .process_block(&impulse(4000), &impulse(4000));
         let onset = first_audible(&out.left, 1e-4);

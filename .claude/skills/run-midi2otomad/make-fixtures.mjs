@@ -1,6 +1,3 @@
-// Generates a tiny .mid (C-E-G melody) and a .wav (440Hz sine) under the
-// directory given as argv[2] (default: $TMPDIR/m2o-fixtures). No deps.
-// Used by the drivers to exercise the real ingest pipeline with real files.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,13 +18,12 @@ function vlq(n) {
 function smf() {
   const ppq = 480;
   const ev = [];
-  // tempo 120 BPM (500000 us/qn)
   ev.push(0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20);
   for (const key of [60, 64, 67]) {
-    ev.push(0x00, 0x90, key, 100); // note on
-    ev.push(...vlq(ppq), 0x80, key, 0); // note off after a quarter
+    ev.push(0x00, 0x90, key, 100);
+    ev.push(...vlq(ppq), 0x80, key, 0);
   }
-  ev.push(0x00, 0xff, 0x2f, 0x00); // end of track
+  ev.push(0x00, 0xff, 0x2f, 0x00);
   const head = [
     0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1,
     (ppq >> 8) & 0xff, ppq & 0xff,
@@ -44,9 +40,9 @@ function smf() {
 function wav() {
   const rate = 48000, secs = 0.4, freq = 440;
   const n = Math.floor(rate * secs);
-  const data = Buffer.alloc(n * 4); // 16-bit stereo
+  const data = Buffer.alloc(n * 4);
   for (let i = 0; i < n; i++) {
-    const env = Math.min(1, i / 200, (n - i) / 200); // tiny fade in/out
+    const env = Math.min(1, i / 200, (n - i) / 200);
     const s = Math.round(Math.sin((2 * Math.PI * freq * i) / rate) * env * 0.7 * 32767);
     data.writeInt16LE(s, i * 4);
     data.writeInt16LE(s, i * 4 + 2);
@@ -57,8 +53,8 @@ function wav() {
   h.write("WAVE", 8);
   h.write("fmt ", 12);
   h.writeUInt32LE(16, 16);
-  h.writeUInt16LE(1, 20); // PCM
-  h.writeUInt16LE(2, 22); // stereo
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(2, 22);
   h.writeUInt32LE(rate, 24);
   h.writeUInt32LE(rate * 4, 28);
   h.writeUInt16LE(4, 32);

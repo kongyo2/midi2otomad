@@ -1,10 +1,7 @@
-//! 再利用する小さな UI 部品。スライダー・チェックボックス行と波形キャンバス。
-
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-/// ラベル + レンジスライダー + 現在値表示の 1 行。値はシグナルでリアクティブに同期する。
 pub fn range_row(
     label: &'static str,
     value: Signal<f64>,
@@ -34,7 +31,6 @@ pub fn range_row(
     }
 }
 
-/// キャンバス要素から 2D コンテキストを取り出す。
 pub fn context_2d(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d> {
     canvas
         .get_context("2d")
@@ -43,7 +39,6 @@ pub fn context_2d(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d
         .and_then(|o| o.dyn_into::<CanvasRenderingContext2d>().ok())
 }
 
-/// 波形サムネイル。`peaks` は 0..1 の振幅エンベロープ。`loop_region` は (start, end, enabled) の割合。
 #[component]
 pub fn Waveform(
     #[prop(into)] peaks: Signal<Vec<f32>>,
