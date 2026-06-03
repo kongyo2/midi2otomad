@@ -89,8 +89,9 @@ pub struct PlayerStatus {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PreviousArg<'a> {
+struct OpenMidiArg<'a> {
     previous: &'a Project,
+    mode: String,
 }
 
 #[derive(Serialize)]
@@ -127,6 +128,15 @@ struct PreviewArg<'a> {
 struct IngestArg<'a> {
     paths: Vec<String>,
     previous: &'a Project,
+    mode: String,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct PitchEstimate {
+    pub base_pitch: i32,
+    pub tune_cents: f64,
+    pub hz: f64,
 }
 
 #[derive(Serialize)]
@@ -143,20 +153,42 @@ struct ExportArg<'a> {
     request: ExportRequestDto<'a>,
 }
 
-pub async fn open_midi(previous: &Project) -> Result<Option<ImportResult>, String> {
-    invoke("open_midi", to_args(&PreviousArg { previous })).await
+pub async fn open_midi(previous: &Project, mode: String) -> Result<Option<ImportResult>, String> {
+    invoke("open_midi", to_args(&OpenMidiArg { previous, mode })).await
 }
 
 pub async fn open_audio() -> Result<Vec<SampleDto>, String> {
     invoke("open_audio", JsValue::NULL).await
 }
 
-pub async fn ingest_paths(paths: Vec<String>, previous: &Project) -> Result<IngestResult, String> {
-    invoke("ingest_paths", to_args(&IngestArg { paths, previous })).await
+pub async fn ingest_paths(
+    paths: Vec<String>,
+    previous: &Project,
+    mode: String,
+) -> Result<IngestResult, String> {
+    invoke(
+        "ingest_paths",
+        to_args(&IngestArg {
+            paths,
+            previous,
+            mode,
+        }),
+    )
+    .await
 }
 
 pub async fn remove_sample(id: &str) -> Result<(), String> {
     invoke_void("remove_sample", to_args(&IdArg { id })).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectArg<'a> {
+    sample: &'a Sample,
+}
+
+pub async fn detect_pitch(sample: &Sample) -> Result<Option<PitchEstimate>, String> {
+    invoke("detect_pitch", to_args(&DetectArg { sample })).await
 }
 
 pub async fn preview_sample(sample: &Sample, pitch: Option<i32>) -> Result<(), String> {

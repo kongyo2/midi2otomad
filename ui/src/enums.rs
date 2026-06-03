@@ -26,6 +26,7 @@ macro_rules! select_value {
 select_value!(InterpolationMode {
     Hermite => "hermite",
     Linear => "linear",
+    Sinc => "sinc",
 });
 
 select_value!(FilterType {
@@ -75,6 +76,11 @@ mod tests {
         assert_eq!(
             InterpolationMode::from_value("hermite"),
             InterpolationMode::Hermite
+        );
+        assert_eq!(InterpolationMode::Sinc.as_value(), "sinc");
+        assert_eq!(
+            InterpolationMode::from_value("sinc"),
+            InterpolationMode::Sinc
         );
         assert_eq!(
             InterpolationMode::from_value("???"),

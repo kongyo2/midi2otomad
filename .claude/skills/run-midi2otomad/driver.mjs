@@ -65,6 +65,7 @@ window.__TAURI__ = {
         case 'open_audio': return [${JSON.stringify(toneDto)}];
         case 'ingest_paths': return { import: { project: ${JSON.stringify(melodyProject)}, trackCount: 1, noteCount: 3 }, samples: [${JSON.stringify(toneDto)}] };
         case 'export': return { path: '/tmp/otomad.wav', bytes: 288044, durationSec: 1.5 };
+        case 'detect_pitch': return { basePitch: 69, tuneCents: 0, hz: 440 };
         case 'play': case 'pause': case 'stop':
         case 'seek': case 'remove_sample': case 'preview_sample':
           return null;

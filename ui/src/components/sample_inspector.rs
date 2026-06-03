@@ -133,6 +133,8 @@ pub fn SampleInspector() -> impl IntoView {
                 let id_name = id.clone();
                 let id_name2 = id.clone();
                 let id_preview = id.clone();
+                let id_detect = id.clone();
+                let id_layer = id.clone();
                 let id_loop_en = id.clone();
                 let id_loop_all = id.clone();
                 let id_trim_en = id.clone();
@@ -276,6 +278,16 @@ pub fn SampleInspector() -> impl IntoView {
                         </div>
                     </div>
 
+                    <div class="panel__head">
+                        <h3 class="subheading">"ピッチ"</h3>
+                        <button
+                            class="linkbtn"
+                            title="波形から基準ピッチを自動検出"
+                            on:click=move |_| s.detect_pitch(id_detect.clone())
+                        >
+                            "🎯 自動検出"
+                        </button>
+                    </div>
                     <div class="grid2">
                         {range_row(
                             "基準ピッチ",
@@ -321,6 +333,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 }
                             >
                                 <option value="hermite">"エルミート（高品質）"</option>
+                                <option value="sinc">"sinc（最高品質）"</option>
                                 <option value="linear">"リニア（軽量）"</option>
                             </select>
                         </label>
@@ -415,6 +428,75 @@ pub fn SampleInspector() -> impl IntoView {
                             </select>
                         </label>
                     </div>
+
+                    <h3 class="subheading">"レイヤー（重ねて鳴らす素材）"</h3>
+                    {move || {
+                        let self_id = id_layer.clone();
+                        let others: Vec<(String, String)> = s.project.with(|p| {
+                            p.samples
+                                .iter()
+                                .filter(|x| x.id != self_id)
+                                .map(|x| (x.id.clone(), x.name.clone()))
+                                .collect()
+                        });
+                        if others.is_empty() {
+                            return view! {
+                                <p class="panel__muted small">
+                                    "他の素材を追加すると、1 つのノートで重ねて発音できます。"
+                                </p>
+                            }
+                                .into_any();
+                        }
+                        let edit_id = id_layer.clone();
+                        view! {
+                            <div class="grid2">
+                                {others
+                                    .into_iter()
+                                    .map(move |(oid, oname)| {
+                                        let target = edit_id.clone();
+                                        let target2 = edit_id.clone();
+                                        let oid_check = oid.clone();
+                                        let checked = Signal::derive(move || {
+                                            s.project
+                                                .with(|p| {
+                                                    p.samples
+                                                        .iter()
+                                                        .find(|t| t.id == target)
+                                                        .map(|x| x.link_ids.contains(&oid_check))
+                                                        .unwrap_or(false)
+                                                })
+                                        });
+                                        view! {
+                                            <label class="checkline">
+                                                <input
+                                                    type="checkbox"
+                                                    prop:checked=move || checked.get()
+                                                    on:change=move |ev| {
+                                                        let on = event_target_checked(&ev);
+                                                        let oid = oid.clone();
+                                                        s.update_sample(
+                                                            &target2,
+                                                            move |x| {
+                                                                if on {
+                                                                    if !x.link_ids.contains(&oid) {
+                                                                        x.link_ids.push(oid);
+                                                                    }
+                                                                } else {
+                                                                    x.link_ids.retain(|l| l != &oid);
+                                                                }
+                                                            },
+                                                        );
+                                                    }
+                                                />
+                                                <span>{oname}</span>
+                                            </label>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </div>
+                        }
+                            .into_any()
+                    }}
                 }
                     .into_any()
             }}

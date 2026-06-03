@@ -79,6 +79,8 @@ pub fn TrackInspector() -> impl IntoView {
                 let id_color = id.clone();
                 let id_hint = id.clone();
                 let id_panlabel = id.clone();
+                let id_drum = id.clone();
+                let id_drum2 = id.clone();
 
                 let note_count = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_count).map(|t| t.notes.len()).unwrap_or(0));
                 let color = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_color).map(|t| t.color.clone()).unwrap_or_default());
@@ -152,6 +154,18 @@ pub fn TrackInspector() -> impl IntoView {
                             "🎚 各ノートのベロシティを音量に反映します。"
                         }}
                     </p>
+
+                    <label class="checkline">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_drum).map(|t| t.drum_mode).unwrap_or(false))
+                            on:change=move |ev| {
+                                let c = event_target_checked(&ev);
+                                s.update_track(&id_drum2, move |t| t.drum_mode = c);
+                            }
+                        />
+                        "ドラムモード（音程で速度を変えず、ノート番号で素材を選ぶ）"
+                    </label>
 
                     <h3 class="subheading">"ボイス（同時発音）管理"</h3>
                     <label class="field">

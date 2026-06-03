@@ -8,10 +8,11 @@ use serde_json::json;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
+use midi2otomad_core::audio::pitch_detect::{calibration_for_hz, detect_fundamental_hz};
 use midi2otomad_core::audio::{build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio};
 use midi2otomad_core::id::make_id;
 use midi2otomad_core::media::{decode_audio, encode_wav};
-use midi2otomad_core::midi::midi_to_project;
+use midi2otomad_core::midi::{midi_to_project_with_mode, ImportMode};
 use midi2otomad_core::schema::{
     create_empty_project, parse_project, Project, Sample, DEFAULT_PROJECT_NAME,
 };
@@ -157,7 +158,11 @@ fn probe_media() -> MediaProbe {
 }
 
 #[tauri::command]
-fn open_midi(app: AppHandle, previous: Option<Project>) -> Result<Option<ImportResult>, String> {
+fn open_midi(
+    app: AppHandle,
+    previous: Option<Project>,
+    mode: Option<String>,
+) -> Result<Option<ImportResult>, String> {
     let picked = app
         .dialog()
         .file()
@@ -168,7 +173,13 @@ fn open_midi(app: AppHandle, previous: Option<Project>) -> Result<Option<ImportR
     };
     let path = file.into_path().map_err(|e| e.to_string())?;
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let result = midi_to_project(&bytes, &file_stem_name(&path), previous.as_ref())?;
+    let import_mode = ImportMode::from_str_or_auto(mode.as_deref().unwrap_or("auto"));
+    let result = midi_to_project_with_mode(
+        &bytes,
+        &file_stem_name(&path),
+        previous.as_ref(),
+        import_mode,
+    )?;
     Ok(Some(ImportResult {
         project: result.project,
         track_count: result.track_count,
@@ -199,7 +210,9 @@ fn ingest_paths(
     state: State<AppState>,
     paths: Vec<String>,
     previous: Option<Project>,
+    mode: Option<String>,
 ) -> Result<IngestResult, String> {
+    let import_mode = ImportMode::from_str_or_auto(mode.as_deref().unwrap_or("auto"));
     let mut import = None;
     let mut samples = Vec::new();
     for path_str in paths {
@@ -207,7 +220,12 @@ fn ingest_paths(
         if is_midi(&path) {
             if import.is_none() {
                 let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-                let result = midi_to_project(&bytes, &file_stem_name(&path), previous.as_ref())?;
+                let result = midi_to_project_with_mode(
+                    &bytes,
+                    &file_stem_name(&path),
+                    previous.as_ref(),
+                    import_mode,
+                )?;
                 import = Some(ImportResult {
                     project: result.project,
                     track_count: result.track_count,
@@ -226,6 +244,67 @@ fn remove_sample(state: State<AppState>, id: String) {
     if let Ok(mut bank) = state.bank.lock() {
         bank.remove(&id);
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PitchEstimate {
+    base_pitch: i32,
+    tune_cents: f64,
+    hz: f64,
+}
+
+fn downmix_mono(pcm: &PcmAudio) -> Vec<f32> {
+    match pcm.channels.as_slice() {
+        [] => Vec::new(),
+        [only] => only.clone(),
+        channels => {
+            let count = channels.len() as f32;
+            (0..pcm.frames)
+                .map(|i| {
+                    channels
+                        .iter()
+                        .map(|c| c.get(i).copied().unwrap_or(0.0))
+                        .sum::<f32>()
+                        / count
+                })
+                .collect()
+        }
+    }
+}
+
+fn trim_region(sample: &Sample, frames: usize, rate: f64) -> (usize, usize) {
+    if !sample.trim.enabled || frames < 2 {
+        return (0, frames);
+    }
+    let start = ((sample.trim.start_sec * rate).floor().max(0.0) as usize).min(frames - 1);
+    let end = if sample.trim.end_sec > sample.trim.start_sec {
+        (sample.trim.end_sec * rate).floor() as usize
+    } else {
+        frames
+    };
+    (start, end.clamp(start + 1, frames))
+}
+
+#[tauri::command]
+fn detect_pitch(state: State<AppState>, sample: Sample) -> Result<Option<PitchEstimate>, String> {
+    let bank = state
+        .bank
+        .lock()
+        .map_err(|_| "バンクのロックに失敗".to_string())?;
+    let pcm = bank.get(&sample.id).ok_or("素材がデコードされていません")?;
+    let mono = downmix_mono(pcm);
+    let (start, end) = trim_region(&sample, mono.len(), pcm.sample_rate);
+    Ok(
+        detect_fundamental_hz(&mono[start..end], pcm.sample_rate).map(|hz| {
+            let (base_pitch, tune_cents) = calibration_for_hz(hz);
+            PitchEstimate {
+                base_pitch,
+                tune_cents,
+                hz,
+            }
+        }),
+    )
 }
 
 #[tauri::command]
@@ -425,6 +504,7 @@ pub fn run() {
             open_audio,
             ingest_paths,
             remove_sample,
+            detect_pitch,
             preview_sample,
             set_mix,
             play,
@@ -479,5 +559,54 @@ mod tests {
         let probe = probe_media();
         assert!(probe.backend.contains("rust"));
         assert_eq!(probe.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn downmix_mono_averages_channels() {
+        let mono = downmix_mono(&PcmAudio {
+            sample_rate: 48000.0,
+            channels: vec![vec![0.5, 0.5]],
+            frames: 2,
+        });
+        assert_eq!(mono, vec![0.5, 0.5]);
+        let stereo = downmix_mono(&PcmAudio {
+            sample_rate: 48000.0,
+            channels: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
+            frames: 2,
+        });
+        assert_eq!(stereo, vec![0.5, 0.5]);
+        let empty = downmix_mono(&PcmAudio {
+            sample_rate: 48000.0,
+            channels: vec![],
+            frames: 0,
+        });
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn trim_region_respects_settings() {
+        use midi2otomad_core::schema::{create_sample, Trim};
+        let with_trim = |enabled: bool, start_sec: f64, end_sec: f64| {
+            let mut s = create_sample("id", "n");
+            s.trim = Trim {
+                enabled,
+                start_sec,
+                end_sec,
+            };
+            s
+        };
+        assert_eq!(
+            trim_region(&with_trim(false, 0.1, 0.5), 1000, 1000.0),
+            (0, 1000)
+        );
+        assert_eq!(
+            trim_region(&with_trim(true, 0.1, 0.5), 1000, 1000.0),
+            (100, 500)
+        );
+        assert_eq!(
+            trim_region(&with_trim(true, 0.2, 0.0), 1000, 1000.0),
+            (200, 1000)
+        );
+        assert_eq!(trim_region(&with_trim(true, 0.0, 0.0), 1, 1000.0), (0, 1));
     }
 }
