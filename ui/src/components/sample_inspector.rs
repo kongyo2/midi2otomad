@@ -184,7 +184,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 peaks=peaks_sig
                                 loop_region=loop_sig
                                 trim=trim_sig
-                                color="#9d86ff".to_string()
+                                color="#ffb27a".to_string()
                                 height=96.0
                             />
                         </div>

@@ -33,7 +33,25 @@ pub fn TopBar() -> impl IntoView {
     view! {
         <header class="topbar">
             <div class="topbar__brand">
-                <span class="topbar__logo">"🎹"</span>
+                <svg class="topbar__logo" width="30" height="30" viewBox="0 0 32 32" fill="none">
+                    <rect
+                        x="1.5"
+                        y="1.5"
+                        width="29"
+                        height="29"
+                        rx="8.5"
+                        fill="#1a1612"
+                        stroke="#3a342c"
+                    ></rect>
+                    <path
+                        d="M4 16h4l2.4-7.5 4 15 3-9.5 1.8 2h6.8"
+                        stroke="#ff8a3d"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    ></path>
+                    <circle cx="25.5" cy="8.5" r="2.3" fill="#c8f24e"></circle>
+                </svg>
                 <div>
                     <h1 class="topbar__title">"midi2otomad"</h1>
                     <p class="topbar__tag">"MIDI 音MAD スタジオ"</p>
@@ -98,6 +116,7 @@ pub fn TopBar() -> impl IntoView {
                         max=2
                         step=0.01
                         prop:value=move || s.project.get().master_gain
+                        style=("--fill", move || format!("{:.1}%", (s.project.get().master_gain / 2.0 * 100.0).clamp(0.0, 100.0)))
                         on:input=move |ev| {
                             if let Ok(v) = event_target_value(&ev).parse::<f64>() {
                                 s.project.update(|p| p.master_gain = v);

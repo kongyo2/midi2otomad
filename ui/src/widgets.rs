@@ -21,6 +21,7 @@ pub fn range_row(
                 max=max
                 step=step
                 prop:value=move || value.get()
+                style=("--fill", move || format!("{:.1}%", ((value.get() - min) / (max - min) * 100.0).clamp(0.0, 100.0)))
                 on:input=move |ev| {
                     if let Ok(v) = event_target_value(&ev).parse::<f64>() {
                         on_input(v);
@@ -63,15 +64,15 @@ pub fn Waveform(
         };
         let w = width as f64;
         ctx.clear_rect(0.0, 0.0, w, height);
-        ctx.set_fill_style_str("rgba(255,255,255,0.03)");
+        ctx.set_fill_style_str("rgba(255,238,210,0.025)");
         ctx.fill_rect(0.0, 0.0, w, height);
 
         if let Some((start, end, true)) = loop_region {
             let x0 = start * w;
             let x1 = end * w;
-            ctx.set_fill_style_str("rgba(124,92,255,0.18)");
+            ctx.set_fill_style_str("rgba(200,242,78,0.15)");
             ctx.fill_rect(x0, 0.0, (x1 - x0).max(1.0), height);
-            ctx.set_stroke_style_str("rgba(124,92,255,0.9)");
+            ctx.set_stroke_style_str("rgba(200,242,78,0.9)");
             ctx.set_line_width(2.0);
             for x in [x0, x1] {
                 ctx.begin_path();
@@ -82,7 +83,7 @@ pub fn Waveform(
         }
 
         let mid = height / 2.0;
-        ctx.set_stroke_style_str("rgba(255,255,255,0.12)");
+        ctx.set_stroke_style_str("rgba(255,240,220,0.1)");
         ctx.set_line_width(1.0);
         ctx.begin_path();
         ctx.move_to(0.0, mid);
@@ -98,14 +99,14 @@ pub fn Waveform(
         if let Some((start, end, true)) = trim {
             let x0 = start * w;
             let x1 = end * w;
-            ctx.set_fill_style_str("rgba(11,11,15,0.6)");
+            ctx.set_fill_style_str("rgba(8,7,6,0.62)");
             if x0 > 0.0 {
                 ctx.fill_rect(0.0, 0.0, x0, height);
             }
             if x1 < w {
                 ctx.fill_rect(x1, 0.0, w - x1, height);
             }
-            ctx.set_stroke_style_str("rgba(251,189,35,0.95)");
+            ctx.set_stroke_style_str("rgba(255,138,61,0.95)");
             ctx.set_line_width(2.0);
             for x in [x0, x1] {
                 ctx.begin_path();
