@@ -1,10 +1,5 @@
-//! 端点を 0 と 1 に固定したまま、進捗値を指数/対数カーブで曲げる。
-
 const LINEAR_EPSILON: f64 = 1e-6;
 
-/// 正規化された進捗 `x` (`[0, 1]`) をカーブ形状 `tension` で曲げる。
-/// `0` は直線、正値は下に膨らむ（ゆっくり始まり加速）、負値は上に膨らむ。
-/// 写像 `(e^{k x} - 1) / (e^{k} - 1)` は任意の `k` で単調かつ点対称。
 pub fn shape_curve(x: f64, tension: f64) -> f64 {
     let clamped = x.clamp(0.0, 1.0);
     if tension.abs() < LINEAR_EPSILON {
@@ -81,7 +76,6 @@ mod tests {
 
     #[test]
     fn midpoint_falls_with_increasing_tension() {
-        // tension が大きいほど中点は下に膨らむ（単調減少）。
         let a = shape_curve(0.5, 1.0);
         let b = shape_curve(0.5, 3.0);
         let c = shape_curve(0.5, 6.0);
@@ -102,7 +96,6 @@ mod tests {
 
     #[test]
     fn tiny_tension_behaves_like_linear() {
-        // 線形とみなす閾値ちょうど未満ならクランプ値をそのまま返す。
         assert_eq!(shape_curve(0.37, 1e-7), 0.37);
     }
 }

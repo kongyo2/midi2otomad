@@ -1,7 +1,3 @@
-//! 音声 DSP 一式。各モジュールは TypeScript 実装の純関数を 1:1 で移植したもの。
-//! 数値は JS の `number` に合わせて f64 で計算し、PCM バッファ（JS の `Float32Array`）
-//! のみ f32 で保持して丸め挙動を一致させる。
-
 pub mod curve;
 pub mod envelope;
 pub mod filter;

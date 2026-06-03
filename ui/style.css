@@ -68,7 +68,6 @@ body {
   flex-direction: column;
 }
 
-/* TopBar */
 .topbar {
   display: flex;
   gap: 18px;
@@ -185,7 +184,6 @@ body {
   align-items: center;
 }
 
-/* Buttons / inputs */
 .btn {
   background: var(--accent);
   color: #fff;
@@ -274,7 +272,6 @@ body {
   border-color: var(--accent);
 }
 
-/* Meter */
 .meter {
   width: 84px;
   height: 8px;
@@ -290,7 +287,6 @@ body {
   transition: width 0.05s linear;
 }
 
-/* Panels */
 .panel {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -364,7 +360,6 @@ body {
   cursor: pointer;
 }
 
-/* Sample library */
 .droparea {
   border: 1.5px dashed var(--border);
   border-radius: 10px;
@@ -460,7 +455,6 @@ body {
   min-height: 2px;
 }
 
-/* Loop editor + waveform */
 .loopeditor {
   margin-bottom: 12px;
 }
@@ -489,7 +483,6 @@ body {
   border-radius: 8px;
 }
 
-/* Timeline */
 .timeline-panel {
   flex: 1;
   display: flex;
@@ -604,7 +597,6 @@ body {
   pointer-events: none;
 }
 
-/* Track rows */
 .trackrow {
   display: flex;
   border-bottom: 1px solid var(--border-soft);
@@ -700,7 +692,6 @@ body {
   opacity: 0.4;
 }
 
-/* Track inspector */
 .pill {
   font-size: 11px;
   font-weight: 700;
@@ -751,7 +742,6 @@ body {
   width: 44px;
 }
 
-/* Help */
 .help__list {
   margin: 0;
   padding-left: 18px;
@@ -776,7 +766,6 @@ body {
   padding-top: 10px;
 }
 
-/* Overlays */
 .dropzone-overlay {
   position: absolute;
   inset: 0;

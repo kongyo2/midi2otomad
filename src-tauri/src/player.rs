@@ -1,10 +1,3 @@
-//! cpal を使ったオフラインミックスの再生エンジン。事前にレンダリングしたステレオバッファを
-//! 1 本のソースとして再生する。シーク・一時停止・位置/レベル取得を共有アトミックで行う。
-//!
-//! cpal の `Stream` は多くのプラットフォームで `!Send` のため、専用スレッドでストリームを生成・
-//! 保持し、制御は `Arc<Shared>` の共有状態のみで行う。これにより `Player` を Tauri の
-//! `State`（`Send + Sync`）に格納できる。
-
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,12 +5,9 @@ use std::sync::{Arc, Mutex};
 use midi2otomad_core::audio::resample::resample_channel;
 
 struct Shared {
-    /// engine_rate のインターリーブ・ステレオサンプル。
     samples: Mutex<Vec<f32>>,
-    /// 再生中フレーム位置。
     pos: AtomicUsize,
     playing: AtomicBool,
-    /// 直近ピークレベル（f32 のビット表現）。
     level: AtomicU32,
 }
 
@@ -41,7 +31,6 @@ pub struct PlayerStatus {
 }
 
 impl Player {
-    /// 既定の出力デバイスでストリームを開く。デバイスが無い環境では `Err`。
     pub fn new() -> Result<Self, String> {
         let shared = Arc::new(Shared {
             samples: Mutex::new(Vec::new()),
@@ -59,7 +48,6 @@ impl Player {
                     return;
                 }
                 let _ = tx.send(Ok(rate));
-                // ストリームを生かし続けるためスレッドを停止させる。
                 loop {
                     std::thread::park();
                 }
@@ -78,7 +66,6 @@ impl Player {
         })
     }
 
-    /// 再生バッファを差し替える。mix のレートがエンジンレートと異なればリサンプルする。
     pub fn set_mix(&self, left: &[f32], right: &[f32], mix_rate: f64) {
         let interleaved = if (mix_rate - self.engine_rate as f64).abs() < 1e-6 {
             interleave(left, right)
@@ -141,7 +128,6 @@ fn interleave(left: &[f32], right: &[f32]) -> Vec<f32> {
     let n = left.len().max(right.len());
     let mut out = Vec::with_capacity(n * 2);
     if left.len() == right.len() {
-        // 通常のミックスは左右同長。境界チェック無しでまとめて詰める。
         for (&l, &r) in left.iter().zip(right.iter()) {
             out.push(l);
             out.push(r);
@@ -221,8 +207,6 @@ where
                                 };
                                 *s = T::from_sample(v);
                             }
-                            // seek()/stop() からの位置更新を上書きしないよう、pos が
-                            // 読み取り時のままのときだけ前進させる。
                             let _ = shared.pos.compare_exchange(
                                 pos,
                                 pos + 1,
@@ -265,9 +249,7 @@ mod tests {
 
     #[test]
     fn pads_shorter_channel_with_zero() {
-        // 右が短いと不足フレームは 0 で補う。
         assert_eq!(interleave(&[1.0, 2.0], &[3.0]), vec![1.0, 3.0, 2.0, 0.0]);
-        // 左が短い場合も同様。
         assert_eq!(interleave(&[1.0], &[3.0, 4.0]), vec![1.0, 3.0, 0.0, 4.0]);
     }
 

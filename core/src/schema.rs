@@ -1,15 +1,9 @@
-//! プロジェクトスキーマ。TypeScript の Zod 定義から移植した、シリアライズ可能な
-//! データモデルとデフォルト値・範囲バリデーション。`parse_project` は欠落フィールドを
-//! 既定値で補完し、範囲外や未知の列挙子を拒否する（Zod の `.parse()` と同じ挙動）。
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const DEFAULT_BASE_PITCH: i32 = 60;
 pub const DEFAULT_SAMPLE_RATE: i32 = 48000;
 pub const DEFAULT_PROJECT_NAME: &str = "Untitled 音MAD";
-
-// --- デフォルト値ヘルパー -------------------------------------------------
 
 fn one_f64() -> f64 {
     1.0
@@ -62,8 +56,6 @@ fn sample_rate_default() -> i32 {
 fn color_default() -> String {
     "#7c5cff".to_string()
 }
-
-// --- 列挙型 ---------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -121,8 +113,6 @@ pub enum StopMode {
     Sample,
     Track,
 }
-
-// --- ネストした設定構造体 -------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -444,8 +434,6 @@ pub struct Project {
     pub output: Output,
 }
 
-// --- バリデーション -------------------------------------------------------
-
 fn range(label: &str, v: f64, lo: f64, hi: f64) -> Result<(), String> {
     if v < lo || v > hi {
         Err(format!("{label} は範囲 [{lo}, {hi}] 外です: {v}"))
@@ -636,17 +624,12 @@ impl Project {
     }
 }
 
-// --- 公開 API -------------------------------------------------------------
-
-/// 任意の JSON 値をプロジェクトとしてデシリアライズし、欠落値を補完してから
-/// 範囲・列挙バリデーションを行う。Zod の `parseProject` 相当。
 pub fn parse_project(raw: serde_json::Value) -> Result<Project, String> {
     let project: Project = serde_json::from_value(raw).map_err(|e| e.to_string())?;
     project.validate()?;
     Ok(project)
 }
 
-/// 既定値で初期化した空のプロジェクトを作る。
 pub fn create_empty_project(name: &str) -> Project {
     Project {
         version: 1,
@@ -663,7 +646,6 @@ pub fn create_empty_project(name: &str) -> Project {
     }
 }
 
-/// 既定値で初期化した素材を作る。
 pub fn create_sample(id: &str, name: &str) -> Sample {
     Sample {
         id: id.to_string(),
@@ -924,7 +906,6 @@ mod tests {
 
     #[test]
     fn accepts_values_at_range_boundaries() {
-        // 各範囲の下限・上限ちょうどは受理される。
         assert!(parse_project(json!({
             "version": 1, "name": "edge",
             "samples": [{

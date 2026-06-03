@@ -1,6 +1,3 @@
-//! グローバル状態とアクション。React の StudioContext を Leptos のシグナルへ移植したもの。
-//! プロジェクト本体はフロントエンドが保持し、ミックス・再生・書き出しはバックエンドへ委譲する。
-
 use std::collections::HashMap;
 
 use leptos::prelude::*;
@@ -216,8 +213,6 @@ impl Studio {
             if this.mixed_seq.get_untracked() != seq {
                 let project = this.snapshot();
                 let _ = api::set_mix(&project).await;
-                // レンダリング中に編集が入ると edit_seq が進むため、この世代だけを
-                // 「ミックス済み」として記録し、より新しい編集を取りこぼさない。
                 this.mixed_seq.set(seq);
             }
             after.await;
@@ -260,8 +255,6 @@ impl Studio {
         let this = *self;
         spawn_local(async move {
             let _ = api::preview_sample(&sample, None).await;
-            // 試聴はプレイヤーのバッファを差し替えるので、次の再生/シークで
-            // プロジェクトのミックスを必ず再レンダリングさせる。
             this.mark_dirty();
         });
     }
@@ -283,7 +276,6 @@ impl Studio {
         });
     }
 
-    /// バックエンドの再生状態を定期取得して `status` を更新する。
     pub fn start_status_polling(&self) {
         let this = *self;
         gloo_timers::callback::Interval::new(60, move || {
@@ -297,12 +289,10 @@ impl Studio {
     }
 }
 
-/// プロジェクト中の素材を id から取得（追跡あり）。
 pub fn find_sample(project: &Project, id: &str) -> Option<Sample> {
     project.samples.iter().find(|s| s.id == id).cloned()
 }
 
-/// 全ノートの最終終了時刻（秒）。
 pub fn project_duration(project: &Project) -> f64 {
     project
         .tracks
@@ -337,7 +327,6 @@ mod tests {
 
     #[test]
     fn project_duration_is_last_note_end() {
-        // 最も遅く終わるのは t2 の 1.0 + 3.0 = 4.0。
         assert!((project_duration(&project_with_notes()) - 4.0).abs() < 1e-9);
     }
 

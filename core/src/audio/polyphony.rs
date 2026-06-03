@@ -1,10 +1,6 @@
-//! ボイス割り当て。トラックの最大同時発音数・優先度・停止グループに従って、
-//! どのノートがどれだけの長さ鳴るかを決める。
-
 use crate::schema::{Polyphony, StopMode, VoicePriority};
 use std::collections::HashMap;
 
-/// ボイスを取り合う 1 ノート。
 #[derive(Debug, Clone)]
 pub struct VoiceRequest {
     pub pitch: i32,
@@ -13,7 +9,6 @@ pub struct VoiceRequest {
     pub sample_id: String,
 }
 
-/// 生き残ったボイス: 元リクエストの添字と、ゲートが開いている長さ。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceAllocation {
     pub index: usize,
@@ -29,7 +24,6 @@ struct ActiveVoice {
     end_sec: f64,
 }
 
-/// JS の `a - b || a.index - b.index` 形を再現: 主キーが 0 なら副キーへ。
 fn nonzero(primary: f64, secondary: f64) -> f64 {
     if primary != 0.0 {
         primary
@@ -38,7 +32,6 @@ fn nonzero(primary: f64, secondary: f64) -> f64 {
     }
 }
 
-/// 値の低いボイスほど先に犠牲にする順序。戻り値 < 0 のとき a が b より犠牲向き。
 fn victim_cmp(priority: VoicePriority, a: &ActiveVoice, b: &ActiveVoice) -> f64 {
     let ai = a.index as f64;
     let bi = b.index as f64;
@@ -50,7 +43,6 @@ fn victim_cmp(priority: VoicePriority, a: &ActiveVoice, b: &ActiveVoice) -> f64 
     }
 }
 
-/// 保持中のボイスが、入ってきたノートと同じ停止グループに属するか。
 fn shares_group(stop_mode: StopMode, held: &ActiveVoice, incoming: &VoiceRequest) -> bool {
     match stop_mode {
         StopMode::Pitch => held.pitch == incoming.pitch,
@@ -331,7 +323,6 @@ mod tests {
 
     #[test]
     fn non_overlapping_notes_reuse_one_voice() {
-        // 重ならないノートは 1 ボイスでも全部鳴る。
         let rs = [d(60, 0.0, 0.5), d(62, 1.0, 0.5), d(64, 2.0, 0.5)];
         assert_eq!(
             alloc(&rs, poly(1, VoicePriority::Newest, StopMode::None)),
@@ -341,7 +332,6 @@ mod tests {
 
     #[test]
     fn track_stop_mode_chokes_any_overlap() {
-        // StopMode::Track は音程・素材に関係なく直前のボイスを止める。
         let rs = [d(60, 0.0, 5.0), d(67, 1.0, 5.0)];
         assert_eq!(
             alloc(&rs, poly(0, VoicePriority::Newest, StopMode::Track)),

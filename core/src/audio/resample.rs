@@ -1,6 +1,3 @@
-//! チャンネル単位のサンプルレート変換。3 次エルミート補間を使い、ダウンサンプル時は
-//! 折り返しを防ぐためアンチエイリアス・ローパスを前段に通す。
-
 use super::filter::{create_biquad_state, design_biquad, process_biquad_sample};
 use super::interpolation::cubic_hermite;
 use crate::schema::FilterType;
@@ -16,8 +13,6 @@ fn clamp_index(index: i64, length: usize) -> usize {
     }
 }
 
-/// 2 段カスケードの Butterworth ローパス (24 dB/oct) を目標ナイキストの少し下に置き、
-/// 間引き前に折り返すエネルギーを除去する。
 fn anti_alias_lowpass(input: &[f32], src_rate: f64, cutoff_hz: f64) -> Vec<f32> {
     let coeffs = design_biquad(FilterType::Lowpass, cutoff_hz, src_rate, FRAC_1_SQRT_2, 0.0);
     let mut stage1 = create_biquad_state();
@@ -31,8 +26,6 @@ fn anti_alias_lowpass(input: &[f32], src_rate: f64, cutoff_hz: f64) -> Vec<f32> 
         .collect()
 }
 
-/// 1 チャンネルを `src_rate` から `dst_rate` へ。ダウンサンプル時はアンチエイリアスを
-/// かけ、アップサンプル・等倍はソースを直接読む。
 pub fn resample_channel(input: &[f32], src_rate: f64, dst_rate: f64) -> Vec<f32> {
     let ratio = src_rate / dst_rate;
     let source: Vec<f32> = if dst_rate < src_rate {
@@ -119,7 +112,6 @@ mod tests {
 
     #[test]
     fn preserves_constant_when_upsampling() {
-        // 定数信号はアップサンプル（フィルタ無し）で値を保つ。
         let out = resample_channel(&[0.5f32; 50], 24000.0, 48000.0);
         assert_eq!(out.len(), 100);
         assert!(out.iter().all(|&v| (v - 0.5).abs() < 1e-5));
@@ -127,21 +119,18 @@ mod tests {
 
     #[test]
     fn output_length_follows_ratio() {
-        // 3 倍ダウンサンプルは概ね 1/3 の長さ。
         assert_eq!(
             resample_channel(&[0.0f32; 300], 48000.0, 16000.0).len(),
             100
         );
-        // 4 倍アップサンプル。
         assert_eq!(resample_channel(&[0.0f32; 25], 12000.0, 48000.0).len(), 100);
     }
 
     #[test]
     fn preserves_low_frequency_amplitude() {
-        // ナイキストよりずっと低いトーンはダウンサンプルでも振幅をほぼ保つ。
         let src = tone(500.0, 48000.0, 4800);
         let out = resample_channel(&src, 48000.0, 24000.0);
-        assert!(rms(&out, out.len() / 2) > 0.6); // 元の RMS ≈ 0.707
+        assert!(rms(&out, out.len() / 2) > 0.6);
     }
 
     #[test]
@@ -150,7 +139,6 @@ mod tests {
         let up = resample_channel(&src, 24000.0, 48000.0);
         let back = resample_channel(&up, 48000.0, 24000.0);
         assert_eq!(back.len(), src.len());
-        // 中盤の RMS が元と同程度に戻る。
         assert!((rms(&back, src.len() / 2) - rms(&src, src.len() / 2)).abs() < 0.1);
     }
 }

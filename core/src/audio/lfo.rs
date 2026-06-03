@@ -1,5 +1,3 @@
-//! 低周波オシレーター。すべて `[-1, 1]` の双極性で位相を揃えてある。
-
 use crate::schema::LfoShape;
 use std::f64::consts::PI;
 
@@ -7,7 +5,6 @@ fn wrap01(x: f64) -> f64 {
     x - x.floor()
 }
 
-/// `shape` の位相 `phase`（サイクル単位、任意の実数）での値。
 pub fn lfo_value(shape: LfoShape, phase: f64) -> f64 {
     let frac = wrap01(phase);
     match shape {
@@ -93,7 +90,6 @@ mod tests {
 
     #[test]
     fn square_boundaries() {
-        // frac < 0.5 で +1、それ以外で -1。境界 0.0 と 0.5 を確認。
         assert_eq!(lfo_value(LfoShape::Square, 0.0), 1.0);
         assert_eq!(lfo_value(LfoShape::Square, 0.49), 1.0);
         assert_eq!(lfo_value(LfoShape::Square, 0.5), -1.0);
@@ -115,7 +111,6 @@ mod tests {
 
     #[test]
     fn triangle_is_continuous_and_peaks() {
-        // 三角波は 0.25 で +1、0.75 で -1 のピーク。途中で連続。
         assert!(close(lfo_value(LfoShape::Triangle, 0.25), 1.0, 9));
         assert!(close(lfo_value(LfoShape::Triangle, 0.75), -1.0, 9));
         let a = lfo_value(LfoShape::Triangle, 0.3);

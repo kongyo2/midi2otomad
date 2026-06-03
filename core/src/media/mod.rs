@@ -1,6 +1,3 @@
-//! 音声の入出力。WAV エンコードは常に利用可能。任意の音声デコード (symphonia) と
-//! MP3 エンコード (libmp3lame) はそれぞれ feature でゲートする。
-
 pub mod encode;
 
 #[cfg(feature = "decode")]

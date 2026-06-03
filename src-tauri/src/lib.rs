@@ -1,7 +1,3 @@
-//! Tauri 2 バックエンド。デコード済み音声バンクと cpal 再生エンジンを保持し、
-//! フロントエンド (Leptos) からのコマンドで MIDI 取り込み・音声デコード・ミックス・
-//! 再生・書き出しを行う。重い処理（DSP・コーデック）はすべて `midi2otomad-core`。
-
 mod player;
 
 use std::collections::HashMap;
@@ -54,8 +50,6 @@ impl AppState {
     }
 }
 
-// --- DTO ------------------------------------------------------------------
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SampleDto {
@@ -101,8 +95,6 @@ pub struct MediaProbe {
     backend: String,
     version: String,
 }
-
-// --- ヘルパー --------------------------------------------------------------
 
 fn file_stem_name(path: &std::path::Path) -> String {
     path.file_name()
@@ -150,8 +142,6 @@ fn load_into_player(state: &AppState, mix: &MixResult) {
         player.set_mix(&mix.left, &mix.right, mix.sample_rate);
     }
 }
-
-// --- コマンド --------------------------------------------------------------
 
 #[tauri::command]
 fn default_project() -> Project {
@@ -462,7 +452,7 @@ mod tests {
         assert!(!is_midi(Path::new("song.wav")));
         assert!(!is_midi(Path::new("song.mp3")));
         assert!(!is_midi(Path::new("song")));
-        assert!(!is_midi(Path::new("midi"))); // 拡張子ではなくファイル名
+        assert!(!is_midi(Path::new("midi")));
     }
 
     #[test]

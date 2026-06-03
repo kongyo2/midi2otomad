@@ -1,12 +1,8 @@
-//! 安定した一意 ID の生成。`prefix_<16桁の hex>` という形を返す。
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// `prefix` を前置した一意な識別子を返す。エントロピー源を持たない環境でも
-/// 衝突しないよう、起動時刻・単調増加カウンタ・アドレス由来の値を混ぜる。
 pub fn make_id(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -55,7 +51,7 @@ mod tests {
     fn handles_empty_prefix() {
         let id = make_id("");
         assert!(id.starts_with('_'));
-        assert_eq!(id.len(), 17); // "_" + 16 hex
+        assert_eq!(id.len(), 17);
     }
 
     #[test]
@@ -68,7 +64,6 @@ mod tests {
 
     #[test]
     fn splitmix64_is_deterministic_and_mixes() {
-        // 同じ入力からは同じ出力。隣接入力でも出力は大きく変わる（雪崩効果）。
         assert_eq!(splitmix64(12345), splitmix64(12345));
         assert_ne!(splitmix64(0), splitmix64(1));
         assert_ne!(splitmix64(0), 0);

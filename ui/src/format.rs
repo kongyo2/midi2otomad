@@ -1,5 +1,3 @@
-//! 表示用のフォーマットヘルパー（renderer/util/format.ts の移植）。
-
 pub fn format_time(seconds: f64) -> String {
     let s = if !seconds.is_finite() || seconds < 0.0 {
         0.0

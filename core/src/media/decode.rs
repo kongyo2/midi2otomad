@@ -1,5 +1,3 @@
-//! 任意の音声バイト列 (wav/mp3/ogg/flac/…) を symphonia でチャンネル PCM にデコードする。
-
 use crate::audio::PcmAudio;
 use std::io::Cursor;
 use symphonia::core::audio::SampleBuffer;
@@ -10,7 +8,6 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-/// 音声バイト列をデコードしてチャンネルごとの f32 PCM にする。
 pub fn decode_audio(bytes: &[u8]) -> Result<PcmAudio, String> {
     let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), Default::default());
     let probed = symphonia::default::get_probe()
@@ -36,7 +33,7 @@ pub fn decode_audio(bytes: &[u8]) -> Result<PcmAudio, String> {
     loop {
         let packet = match format.next_packet() {
             Ok(p) => p,
-            Err(SymphoniaError::IoError(_)) => break, // ストリーム終端
+            Err(SymphoniaError::IoError(_)) => break,
             Err(e) => return Err(format!("読み取りエラー: {e}")),
         };
         if packet.track_id() != track_id {
@@ -84,8 +81,6 @@ mod tests {
     use super::*;
     use crate::media::encode::encode_wav;
 
-    /// 手組みのモノラル 16bit PCM WAV。エンコーダは常にステレオを書くため、
-    /// チャンネル数 1 の経路を確かめるにはここで直接組む。
     fn mono_wav_16(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
         let data_size = samples.len() * 2;
         let mut buf = Vec::new();
@@ -94,11 +89,11 @@ mod tests {
         buf.extend_from_slice(b"WAVE");
         buf.extend_from_slice(b"fmt ");
         buf.extend_from_slice(&16u32.to_le_bytes());
-        buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
         buf.extend_from_slice(&sample_rate.to_le_bytes());
-        buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
-        buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+        buf.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes());
         buf.extend_from_slice(&16u16.to_le_bytes());
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&(data_size as u32).to_le_bytes());
@@ -130,7 +125,6 @@ mod tests {
 
     #[test]
     fn rejects_truncated_riff_header() {
-        // RIFF/WAVE シグネチャだけで本体が無いストリーム。
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"RIFF");
         bytes.extend_from_slice(&4u32.to_le_bytes());
@@ -149,7 +143,6 @@ mod tests {
         assert!(pcm.channels.len() >= 2);
         assert!((pcm.frames as i64 - frames as i64).abs() <= 2);
         let mid = frames / 2;
-        // 16bit + ディザのため誤差は 1 LSB 強。
         assert!((pcm.channels[0][mid] - left[mid]).abs() < 2e-4);
         assert!((pcm.channels[1][mid] - right[mid]).abs() < 2e-4);
     }
@@ -164,7 +157,6 @@ mod tests {
         assert_eq!(pcm.sample_rate, 48000.0);
         assert!(pcm.channels.len() >= 2);
         let mid = frames / 2;
-        // 24bit は無ディザで十分高精度。
         assert!((pcm.channels[0][mid] - left[mid]).abs() < 1e-4);
         assert!((pcm.channels[1][mid] - right[mid]).abs() < 1e-4);
     }
@@ -189,7 +181,6 @@ mod tests {
         let (left, right) = stereo_tone(frames);
         let wav = encode_wav(48000, &left, &right, frames, 16);
         let pcm = decode_audio(&wav).expect("decode");
-        // 480 フレーム / 48000 Hz = 0.01 秒前後。
         assert!((pcm.duration_sec() - 0.01).abs() < 1e-3);
     }
 }

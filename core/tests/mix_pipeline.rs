@@ -1,7 +1,3 @@
-//! オフラインミックスの縦断テスト。プロジェクト + デコード済みバンクから
-//! `mix_project` でステレオミックスを作り、WAV へエンコードし、再びデコードして
-//! 一貫性を確かめる。公開 API だけを通る現実的な経路の確認。
-
 use std::collections::HashMap;
 
 use midi2otomad_core::audio::{build_waveform_peaks, mix_project, MixOptions, PcmAudio};
@@ -59,7 +55,6 @@ fn mix_produces_audible_stereo() {
     assert_eq!(mix.right.len(), mix.frames);
     assert!(mix.peak > 0.0);
     assert!(mix.left.iter().all(|v| v.is_finite()));
-    // 0.5 秒のノート + リリース + tail があるので 0.5 秒分以上のフレーム。
     assert!(mix.frames > 24000);
 }
 
@@ -84,7 +79,6 @@ fn mix_survives_wav_roundtrip_at_each_bit_depth() {
         assert_eq!(decoded.sample_rate, 48000.0);
         assert!(decoded.channels.len() >= 2);
         assert!((decoded.frames as i64 - mix.frames as i64).abs() <= 2);
-        // 復元した音声も無音ではない。
         let energy: f64 = decoded.channels[0]
             .iter()
             .map(|&v| (v as f64) * (v as f64))
@@ -141,7 +135,6 @@ fn reverb_send_extends_the_tail() {
 
 #[test]
 fn waveform_peaks_track_amplitude_envelope() {
-    // 前半が静か・後半が大きい音声のピークは後半で高くなる。
     let mut ch = vec![0.05f32; 1000];
     for v in ch.iter_mut().skip(500) {
         *v = 0.9;
@@ -178,7 +171,6 @@ fn limiter_option_overrides_project_setting() {
             limiter: Some(false),
         },
     );
-    // リミッター無効のほうがピーク付近のサンプルが大きい。
     let lim_max = limited.left.iter().fold(0.0f32, |p, &v| p.max(v.abs()));
     let byp_max = bypassed.left.iter().fold(0.0f32, |p, &v| p.max(v.abs()));
     assert!(byp_max > lim_max);

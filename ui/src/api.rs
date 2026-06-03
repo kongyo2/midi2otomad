@@ -1,6 +1,3 @@
-//! Tauri バックエンドとの橋渡し。`window.__TAURI__.core.invoke` を wasm-bindgen で取り込み、
-//! 各コマンドを型付き async 関数として公開する。
-
 use midi2otomad_core::schema::{Project, Sample};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -35,15 +32,10 @@ async fn invoke_void(cmd: &str, args: JsValue) -> Result<(), String> {
 }
 
 fn to_args(value: &impl Serialize) -> JsValue {
-    // Tauri の invoke 引数はプレーンな JS オブジェクトを期待する。既定の to_value は
-    // Rust の Map を JS の `Map` にしてしまい note_sample_map などが失われるため、
-    // json 互換シリアライザでオブジェクトとして直列化する。
     value
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .unwrap_or(JsValue::NULL)
 }
-
-// --- DTO ------------------------------------------------------------------
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -94,8 +86,6 @@ pub struct PlayerStatus {
     pub duration: f64,
     pub level: f32,
 }
-
-// --- 引数構造体 -----------------------------------------------------------
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,8 +142,6 @@ struct ExportRequestDto<'a> {
 struct ExportArg<'a> {
     request: ExportRequestDto<'a>,
 }
-
-// --- コマンド --------------------------------------------------------------
 
 pub async fn open_midi(previous: &Project) -> Result<Option<ImportResult>, String> {
     invoke("open_midi", to_args(&PreviousArg { previous })).await
@@ -219,8 +207,6 @@ pub async fn export(
     .await
 }
 
-// --- ドラッグ&ドロップ ------------------------------------------------------
-
 #[derive(Deserialize)]
 struct DragPayload {
     paths: Vec<String>,
@@ -231,7 +217,6 @@ struct DragEvent {
     payload: DragPayload,
 }
 
-/// `tauri://drag-drop` を購読し、ドロップされたファイルパスをコールバックへ渡す。
 pub fn on_drag_drop(cb: impl Fn(Vec<String>) + 'static) {
     let closure = Closure::wrap(Box::new(move |ev: JsValue| {
         if let Ok(e) = serde_wasm_bindgen::from_value::<DragEvent>(ev) {
@@ -244,7 +229,6 @@ pub fn on_drag_drop(cb: impl Fn(Vec<String>) + 'static) {
     });
 }
 
-/// 単純なウィンドウイベント（drag-enter / drag-leave）を購読する。
 pub fn on_window_event(event: &'static str, cb: impl Fn() + 'static) {
     let closure = Closure::wrap(Box::new(move |_ev: JsValue| cb()) as Box<dyn FnMut(JsValue)>);
     wasm_bindgen_futures::spawn_local(async move {
