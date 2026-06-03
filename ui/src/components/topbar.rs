@@ -44,6 +44,16 @@ pub fn TopBar() -> impl IntoView {
                 <button class="btn btn--ghost" on:click=move |_| s.open_midi()>
                     "MIDI を開く"
                 </button>
+                <select
+                    class="select select--mini"
+                    title="MIDI 取り込みモード（自動: ch10/バンク127をドラムとして音階固定）"
+                    prop:value=move || s.import_mode.get()
+                    on:change=move |ev| s.import_mode.set(event_target_value(&ev))
+                >
+                    <option value="auto">"自動"</option>
+                    <option value="normal">"音階"</option>
+                    <option value="drum">"ドラム"</option>
+                </select>
             </div>
 
             <div class="topbar__transport">

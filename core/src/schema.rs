@@ -90,6 +90,7 @@ pub enum InterpolationMode {
     Linear,
     #[default]
     Hermite,
+    Sinc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +278,8 @@ pub struct Sample {
     pub filter: Filter,
     #[serde(default)]
     pub pitch_mod: PitchMod,
+    #[serde(default)]
+    pub link_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -403,6 +406,8 @@ pub struct Track {
     pub pan: f64,
     #[serde(default)]
     pub default_sample_id: Option<String>,
+    #[serde(default)]
+    pub drum_mode: bool,
     #[serde(default)]
     pub note_sample_map: HashMap<String, String>,
     #[serde(default)]
@@ -682,6 +687,7 @@ pub fn create_sample(id: &str, name: &str) -> Sample {
         envelope: Envelope::default(),
         filter: Filter::default(),
         pitch_mod: PitchMod::default(),
+        link_ids: Vec::new(),
     }
 }
 
@@ -728,6 +734,7 @@ mod tests {
         assert_eq!(s.envelope.release_ms, 90.0);
         assert_eq!(s.filter, Filter::default());
         assert_eq!(s.pitch_mod.vibrato_hz, 5.0);
+        assert!(s.link_ids.is_empty());
     }
 
     #[test]
@@ -744,6 +751,7 @@ mod tests {
         assert_eq!(track.gain, 1.0);
         assert_eq!(track.pan, 0.0);
         assert_eq!(track.default_sample_id, None);
+        assert!(!track.drum_mode);
         assert!(track.note_sample_map.is_empty());
         assert_eq!(track.notes[0].velocity, 100);
     }
@@ -910,12 +918,13 @@ mod tests {
                 "loop": { "enabled": true, "startSec": 0.2, "endSec": 1.8 },
                 "envelope": { "attackMs": 8, "decayMs": 120, "sustain": 0.6, "releaseMs": 200 },
                 "filter": { "enabled": true, "type": "highshelf", "cutoffHz": 5000, "q": 1.2, "gainDb": 6 },
-                "pitchMod": { "vibratoCents": 30, "vibratoHz": 6, "vibratoShape": "triangle" }
+                "pitchMod": { "vibratoCents": 30, "vibratoHz": 6, "vibratoShape": "triangle" },
+                "linkIds": ["s2", "s3"]
             }],
             "tracks": [{
                 "id": "t1", "name": "Lead", "midiIndex": 3, "color": "#36d399",
                 "muted": false, "solo": true, "gain": 0.8, "pan": -0.3,
-                "defaultSampleId": "s1", "noteSampleMap": { "60": "s1", "64": "s1" },
+                "defaultSampleId": "s1", "drumMode": true, "noteSampleMap": { "60": "s1", "64": "s1" },
                 "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 90 }],
                 "dynamics": { "volume": [{ "t": 0, "v": 0.8 }], "expression": [{ "t": 1, "v": 0.5 }] },
                 "reverbSend": 0.4,

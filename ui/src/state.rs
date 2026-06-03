@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use leptos::prelude::*;
+use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{create_sample, Loop, Project, Sample, Track, Trim};
 use wasm_bindgen_futures::spawn_local;
 
@@ -18,6 +19,7 @@ pub struct Studio {
     pub edit_seq: RwSignal<u64>,
     pub mixed_seq: RwSignal<u64>,
     pub drag_active: RwSignal<bool>,
+    pub import_mode: RwSignal<String>,
 }
 
 fn sample_from_dto(dto: &SampleDto) -> Sample {
@@ -50,6 +52,7 @@ impl Studio {
             edit_seq: RwSignal::new(1),
             mixed_seq: RwSignal::new(0),
             drag_active: RwSignal::new(false),
+            import_mode: RwSignal::new("auto".to_string()),
         }
     }
 
@@ -113,7 +116,8 @@ impl Studio {
         let this = *self;
         spawn_local(async move {
             let previous = this.snapshot();
-            match api::open_midi(&previous).await {
+            let mode = this.import_mode.get_untracked();
+            match api::open_midi(&previous, mode).await {
                 Ok(Some(import)) => this.apply_import(import),
                 Ok(None) => {}
                 Err(e) => this.show_toast(format!("MIDI 読み込みに失敗しました: {e}")),
@@ -138,7 +142,8 @@ impl Studio {
         spawn_local(async move {
             this.busy.set(Some("ファイルを読み込み中…".into()));
             let previous = this.snapshot();
-            match api::ingest_paths(paths, &previous).await {
+            let mode = this.import_mode.get_untracked();
+            match api::ingest_paths(paths, &previous, mode).await {
                 Ok(result) => {
                     if let Some(import) = result.import {
                         this.apply_import(import);
@@ -171,6 +176,27 @@ impl Studio {
                 this.selected_sample.set(None);
             }
             this.mark_dirty();
+        });
+    }
+
+    pub fn detect_pitch(&self, id: String) {
+        let this = *self;
+        spawn_local(async move {
+            match api::detect_pitch(&id).await {
+                Ok(Some(est)) => {
+                    this.update_sample(&id, move |s| {
+                        s.base_pitch = est.base_pitch.clamp(0, 127);
+                        s.tune_cents = est.tune_cents.clamp(-100.0, 100.0);
+                    });
+                    this.show_toast(format!(
+                        "基準ピッチを推定: {} ({:.1} Hz)",
+                        midi_to_note_name(est.base_pitch as f64),
+                        est.hz
+                    ));
+                }
+                Ok(None) => this.show_toast("ピッチを推定できませんでした"),
+                Err(e) => this.show_toast(format!("ピッチ推定に失敗しました: {e}")),
+            }
         });
     }
 

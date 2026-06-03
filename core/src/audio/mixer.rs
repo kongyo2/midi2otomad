@@ -184,34 +184,41 @@ fn read_sample(
     channel: &[f32],
     frames: usize,
     pos: f64,
-    hermite: bool,
+    interp: InterpolationMode,
     region: Option<LoopRegion>,
 ) -> f64 {
     let i0 = pos.floor() as i64;
     let frac = pos - i0 as f64;
-    if !hermite {
-        let a = sample_at(channel, frames, i0, region);
-        let b = sample_at(channel, frames, i0 + 1, region);
-        return a + (b - a) * frac;
-    }
-    if region.is_none() {
-        let m = frames.min(channel.len());
-        if i0 >= 1 && (i0 as usize) + 2 < m {
-            let i = i0 as usize;
-            return super::interpolation::cubic_hermite(
-                finite(channel[i - 1]),
-                finite(channel[i]),
-                finite(channel[i + 1]),
-                finite(channel[i + 2]),
-                frac,
-            );
+    match interp {
+        InterpolationMode::Linear => {
+            let a = sample_at(channel, frames, i0, region);
+            let b = sample_at(channel, frames, i0 + 1, region);
+            a + (b - a) * frac
+        }
+        InterpolationMode::Sinc => super::interpolation::windowed_sinc(i0, frac, |idx| {
+            sample_at(channel, frames, idx, region)
+        }),
+        InterpolationMode::Hermite => {
+            if region.is_none() {
+                let m = frames.min(channel.len());
+                if i0 >= 1 && (i0 as usize) + 2 < m {
+                    let i = i0 as usize;
+                    return super::interpolation::cubic_hermite(
+                        finite(channel[i - 1]),
+                        finite(channel[i]),
+                        finite(channel[i + 1]),
+                        finite(channel[i + 2]),
+                        frac,
+                    );
+                }
+            }
+            let y0 = sample_at(channel, frames, i0 - 1, region);
+            let y1 = sample_at(channel, frames, i0, region);
+            let y2 = sample_at(channel, frames, i0 + 1, region);
+            let y3 = sample_at(channel, frames, i0 + 2, region);
+            super::interpolation::cubic_hermite(y0, y1, y2, y3, frac)
         }
     }
-    let y0 = sample_at(channel, frames, i0 - 1, region);
-    let y1 = sample_at(channel, frames, i0, region);
-    let y2 = sample_at(channel, frames, i0 + 1, region);
-    let y3 = sample_at(channel, frames, i0 + 2, region);
-    super::interpolation::cubic_hermite(y0, y1, y2, y3, frac)
 }
 
 fn soft_clip(x: f64, threshold: f64) -> f64 {
@@ -280,8 +287,13 @@ fn render_note(
     cut_sec: Option<f64>,
 ) {
     let total = left.len() as i64;
+    let effective_pitch = if track.drum_mode {
+        sample.base_pitch
+    } else {
+        note.pitch
+    };
     let base_ratio = pitch_ratio(
-        note.pitch as f64,
+        effective_pitch as f64,
         sample.base_pitch as f64,
         sample.tune_cents,
     );
@@ -302,7 +314,7 @@ fn render_note(
     let static_gain = vel_gain * sample.gain * track.gain * master_gain;
     let (trim_start, trim_end) = resolve_trim(sample, src);
     let loop_region = resolve_loop(sample, src, (trim_start, trim_end));
-    let hermite = sample.interpolation == InterpolationMode::Hermite;
+    let interp = sample.interpolation;
 
     let ch0 = match src.channels.first() {
         Some(c) => c.as_slice(),
@@ -388,14 +400,14 @@ fn render_note(
             let (s_l, s_r) = if !need_sample {
                 (0.0, 0.0)
             } else if mono {
-                let mut s = read_sample(ch0, src.frames, pos, hermite, region);
+                let mut s = read_sample(ch0, src.frames, pos, interp, region);
                 if let Some(c) = coeffs {
                     s = process_biquad_sample(&c, &mut state_l, s);
                 }
                 (s, s)
             } else {
-                let mut s_l = read_sample(ch0, src.frames, pos, hermite, region);
-                let mut s_r = read_sample(ch1, src.frames, pos, hermite, region);
+                let mut s_l = read_sample(ch0, src.frames, pos, interp, region);
+                let mut s_r = read_sample(ch1, src.frames, pos, interp, region);
                 if let Some(c) = coeffs {
                     s_l = process_biquad_sample(&c, &mut state_l, s_l);
                     s_r = process_biquad_sample(&c, &mut state_r, s_r);
@@ -429,7 +441,7 @@ fn render_note(
     }
 }
 
-fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
+fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, drum_mode: bool) -> f64 {
     let gate_plus_release = note.duration_sec + sample.envelope.release_ms / 1000.0;
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
@@ -437,8 +449,13 @@ fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
     if resolve_loop(sample, src, (trim_start, trim_end)).is_some() || pitch_modulated {
         return gate_plus_release;
     }
+    let effective_pitch = if drum_mode {
+        sample.base_pitch
+    } else {
+        note.pitch
+    };
     let ratio = pitch_ratio(
-        note.pitch as f64,
+        effective_pitch as f64,
         sample.base_pitch as f64,
         sample.tune_cents,
     );
@@ -448,10 +465,43 @@ fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
 
 struct PlannedVoice<'a> {
     note: &'a Note,
-    sample: &'a Sample,
-    src: &'a PcmAudio,
+    sources: Vec<(&'a Sample, &'a PcmAudio)>,
     cut_sec: Option<f64>,
     end_sec: f64,
+}
+
+const MAX_LAYERS: usize = 8;
+
+fn collect_sources<'a>(
+    root: (&'a Sample, &'a PcmAudio),
+    sample_by_id: &HashMap<&str, &'a Sample>,
+    bank: &'a dyn AudioBank,
+) -> Vec<(&'a Sample, &'a PcmAudio)> {
+    let mut out = vec![root];
+    if root.0.link_ids.is_empty() {
+        return out;
+    }
+    let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    visited.insert(root.0.id.as_str());
+    let mut queue: std::collections::VecDeque<&str> =
+        root.0.link_ids.iter().map(|s| s.as_str()).collect();
+    while let Some(id) = queue.pop_front() {
+        if out.len() >= MAX_LAYERS {
+            break;
+        }
+        if !visited.insert(id) {
+            continue;
+        }
+        if let (Some(&sample), Some(src)) = (sample_by_id.get(id), bank.get(id)) {
+            if src.frames >= 2 {
+                out.push((sample, src));
+                for l in &sample.link_ids {
+                    queue.push_back(l.as_str());
+                }
+            }
+        }
+    }
+    out
 }
 
 struct TrackPlan<'a> {
@@ -494,27 +544,32 @@ fn plan_track_voices<'a>(
         .map(|(note, (sample, src))| VoiceRequest {
             pitch: note.pitch,
             start_sec: note.start_sec,
-            duration_sec: sounding_duration_sec(note, sample, src),
+            duration_sec: sounding_duration_sec(note, sample, src, track.drum_mode),
             sample_id: sample.id.clone(),
         })
         .collect();
     allocate_voices(&requests, &track.polyphony)
         .into_iter()
         .map(|alloc| {
-            let (note, (sample, src)) = resolved[alloc.index];
+            let (note, root) = resolved[alloc.index];
+            let sources = collect_sources(root, sample_by_id, bank);
             let cut_sec = if alloc.duration_sec < requests[alloc.index].duration_sec {
                 Some(alloc.duration_sec)
             } else {
                 None
             };
+            let max_release = sources
+                .iter()
+                .map(|(s, _)| s.envelope.release_ms)
+                .fold(0.0, f64::max)
+                / 1000.0;
             let end_sec = match cut_sec {
-                None => note.start_sec + note.duration_sec + sample.envelope.release_ms / 1000.0,
+                None => note.start_sec + note.duration_sec + max_release,
                 Some(cs) => note.start_sec + cs + CHOKE_RELEASE_MS / 1000.0,
             };
             PlannedVoice {
                 note,
-                sample,
-                src,
+                sources,
                 cut_sec,
                 end_sec,
             }
@@ -617,23 +672,25 @@ pub fn mix_project<'a>(
         let pan = pan_gains(tp.track.pan);
         let track_dyn = build_track_dynamics(tp.track, frames, out_rate);
         for voice in &tp.voices {
-            let send_ref = send
-                .as_mut()
-                .map(|(l, r)| (l.as_mut_slice(), r.as_mut_slice()));
-            render_note(
-                voice.note,
-                voice.sample,
-                voice.src,
-                tp.track,
-                track_dyn.as_deref(),
-                &mut left,
-                &mut right,
-                send_ref,
-                out_rate,
-                master_gain,
-                pan,
-                voice.cut_sec,
-            );
+            for &(sample, src) in &voice.sources {
+                let send_ref = send
+                    .as_mut()
+                    .map(|(l, r)| (l.as_mut_slice(), r.as_mut_slice()));
+                render_note(
+                    voice.note,
+                    sample,
+                    src,
+                    tp.track,
+                    track_dyn.as_deref(),
+                    &mut left,
+                    &mut right,
+                    send_ref,
+                    out_rate,
+                    master_gain,
+                    pan,
+                    voice.cut_sec,
+                );
+            }
         }
     }
 
@@ -1245,6 +1302,98 @@ mod tests {
         let diverges = (5..150).any(|i| (hm.left[i] as f64 - lm.left[i] as f64).abs() > 1e-7);
         assert!(diverges);
         assert!(all_finite(&hm.left) && all_finite(&lm.left));
+    }
+
+    #[test]
+    fn sinc_interpolation_renders_finite_and_distinct() {
+        let curved: Vec<f32> = (0..400).map(|i| (i as f64 * 0.2).sin() as f32).collect();
+        let src = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![curved],
+            frames: 400,
+        };
+        let base = json!({ "tuneCents": 100, "envelope": { "attackMs": 0, "releaseMs": 0 } });
+        let sinc = make_project(
+            json!([sample_raw(merge(
+                base.clone(),
+                json!({ "interpolation": "sinc" })
+            ))]),
+            json!([track_raw(json!({}))]),
+        );
+        let linear = make_project(
+            json!([sample_raw(merge(
+                base,
+                json!({ "interpolation": "linear" })
+            ))]),
+            json!([track_raw(json!({}))]),
+        );
+        let sm = mix(&sinc, &bank1("s1", src.clone()), limiter_off());
+        let lm = mix(&linear, &bank1("s1", src), limiter_off());
+        assert!(all_finite(&sm.left));
+        assert!(sm.peak > 0.0);
+        assert!((20..150).any(|i| (sm.left[i] as f64 - lm.left[i] as f64).abs() > 1e-6));
+    }
+
+    #[test]
+    fn drum_mode_ignores_note_pitch_for_speed() {
+        let note = json!([{ "pitch": 72, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]);
+        let pitched = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([track_raw(json!({ "notes": note.clone() }))]),
+        );
+        let drum = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([track_raw(json!({ "notes": note, "drumMode": true }))]),
+        );
+        let pm = mix(
+            &pitched,
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        let dm = mix(&drum, &bank1("s1", mono_ramp_source(1000)), limiter_off());
+        assert!(close(pm.left[100] as f64, 0.2, 2));
+        assert!(close(dm.left[100] as f64, 0.1, 2));
+    }
+
+    fn two_const_bank() -> HashMap<String, PcmAudio> {
+        let mut bank = HashMap::new();
+        bank.insert("s1".to_string(), const_source(1.0, 1000));
+        bank.insert("s2".to_string(), const_source(1.0, 1000));
+        bank
+    }
+
+    #[test]
+    fn linked_samples_layer_together() {
+        let solo = make_project(
+            json!([sample_raw(json!({ "id": "s1" }))]),
+            json!([track_raw(json!({ "defaultSampleId": "s1" }))]),
+        );
+        let layered = make_project(
+            json!([
+                sample_raw(json!({ "id": "s1", "linkIds": ["s2"] })),
+                sample_raw(json!({ "id": "s2" }))
+            ]),
+            json!([track_raw(json!({ "defaultSampleId": "s1" }))]),
+        );
+        let bank = two_const_bank();
+        let sm = mix(&solo, &bank, limiter_off());
+        let lm = mix(&layered, &bank, limiter_off());
+        assert!(close(sm.left[100] as f64, 1.0, 4));
+        assert!(close(lm.left[100] as f64, 2.0, 4));
+    }
+
+    #[test]
+    fn linked_samples_handle_cycles() {
+        let proj = make_project(
+            json!([
+                sample_raw(json!({ "id": "s1", "linkIds": ["s2"] })),
+                sample_raw(json!({ "id": "s2", "linkIds": ["s1"] }))
+            ]),
+            json!([track_raw(json!({ "defaultSampleId": "s1" }))]),
+        );
+        let m = mix(&proj, &two_const_bank(), limiter_off());
+        assert!(all_finite(&m.left));
+        assert!(close(m.left[100] as f64, 2.0, 4));
     }
 
     #[test]

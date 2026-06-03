@@ -10,6 +10,25 @@ const TRACK_PALETTE: [&str; 10] = [
 ];
 
 const DEFAULT_TEMPO_US: u32 = 500_000;
+const GM_DRUM_CHANNEL: u8 = 9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportMode {
+    Normal,
+    Drum,
+    #[default]
+    Auto,
+}
+
+impl ImportMode {
+    pub fn from_str_or_auto(value: &str) -> Self {
+        match value {
+            "normal" => ImportMode::Normal,
+            "drum" => ImportMode::Drum,
+            _ => ImportMode::Auto,
+        }
+    }
+}
 
 pub struct MidiImportResult {
     pub project: Project,
@@ -91,6 +110,7 @@ struct RawNote {
     start_tick: u64,
     end_tick: u64,
     velocity: i32,
+    channel: u8,
 }
 
 struct RawTrack {
@@ -99,12 +119,22 @@ struct RawTrack {
     notes: Vec<RawNote>,
     volume: Vec<(u64, f64)>,
     expression: Vec<(u64, f64)>,
+    all_drum: bool,
 }
 
 pub fn midi_to_project(
     bytes: &[u8],
     file_name: &str,
     previous: Option<&Project>,
+) -> Result<MidiImportResult, String> {
+    midi_to_project_with_mode(bytes, file_name, previous, ImportMode::Auto)
+}
+
+pub fn midi_to_project_with_mode(
+    bytes: &[u8],
+    file_name: &str,
+    previous: Option<&Project>,
+    mode: ImportMode,
 ) -> Result<MidiImportResult, String> {
     let smf = Smf::parse(bytes).map_err(|e| format!("MIDI の解析に失敗しました: {e}"))?;
 
@@ -128,6 +158,7 @@ pub fn midi_to_project(
         let mut volume: Vec<(u64, f64)> = Vec::new();
         let mut expression: Vec<(u64, f64)> = Vec::new();
         let mut active: HashMap<(u8, u8), Vec<(u64, u8)>> = HashMap::new();
+        let mut bank_msb: HashMap<u8, u8> = HashMap::new();
 
         for event in track {
             tick += event.delta.as_int() as u64;
@@ -164,6 +195,9 @@ pub fn midi_to_project(
                         );
                     }
                     MidiMessage::Controller { controller, value } => match controller.as_int() {
+                        0 => {
+                            bank_msb.insert(channel.as_int(), value.as_int());
+                        }
                         7 => volume.push((tick, value.as_int() as f64 / 127.0)),
                         11 => expression.push((tick, value.as_int() as f64 / 127.0)),
                         _ => {}
@@ -175,12 +209,16 @@ pub fn midi_to_project(
         }
 
         if !notes.is_empty() {
+            let all_drum = notes
+                .iter()
+                .all(|n| n.channel == GM_DRUM_CHANNEL || bank_msb.get(&n.channel) == Some(&127));
             raw_tracks.push(RawTrack {
                 midi_index,
                 name: name.trim().to_string(),
                 notes,
                 volume,
                 expression,
+                all_drum,
             });
         }
     }
@@ -232,6 +270,11 @@ pub fn midi_to_project(
             } else {
                 raw.name.clone()
             };
+            let drum_mode = match mode {
+                ImportMode::Normal => false,
+                ImportMode::Drum => true,
+                ImportMode::Auto => raw.all_drum,
+            };
             Track {
                 id: crate::id::make_id("track"),
                 name,
@@ -242,6 +285,7 @@ pub fn midi_to_project(
                 gain: 1.0,
                 pan: 0.0,
                 default_sample_id: fallback_sample_id.clone(),
+                drum_mode,
                 note_sample_map: HashMap::new(),
                 notes,
                 dynamics: TrackDynamics {
@@ -316,6 +360,7 @@ fn close_note(
                 start_tick,
                 end_tick,
                 velocity: velocity as i32,
+                channel,
             });
         }
     }
@@ -645,5 +690,98 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.project.tracks[0].color, TRACK_PALETTE[0]);
+    }
+
+    fn note_on_ch(tick_delta: u32, channel: u8, key: u8, vel: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta(tick_delta),
+            kind: TrackEventKind::Midi {
+                channel: channel.into(),
+                message: MidiMessage::NoteOn {
+                    key: u7::new(key),
+                    vel: u7::new(vel),
+                },
+            },
+        }
+    }
+
+    fn note_off_ch(tick_delta: u32, channel: u8, key: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta(tick_delta),
+            kind: TrackEventKind::Midi {
+                channel: channel.into(),
+                message: MidiMessage::NoteOff {
+                    key: u7::new(key),
+                    vel: u7::new(0),
+                },
+            },
+        }
+    }
+
+    fn controller(tick_delta: u32, channel: u8, num: u8, value: u8) -> TrackEvent<'static> {
+        TrackEvent {
+            delta: delta(tick_delta),
+            kind: TrackEventKind::Midi {
+                channel: channel.into(),
+                message: MidiMessage::Controller {
+                    controller: u7::new(num),
+                    value: u7::new(value),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn auto_mode_flags_gm_drum_channel() {
+        let drum = vec![
+            note_on_ch(0, 9, 38, 100),
+            note_off_ch(240, 9, 38),
+            end_of_track(),
+        ];
+        let r = midi_to_project(&write_smf(drum), "d.mid", None).unwrap();
+        assert!(r.project.tracks[0].drum_mode);
+
+        let melodic = vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()];
+        let r = midi_to_project(&write_smf(melodic), "m.mid", None).unwrap();
+        assert!(!r.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn auto_mode_flags_bank_msb_127() {
+        let events = vec![
+            controller(0, 3, 0, 127),
+            note_on_ch(0, 3, 60, 100),
+            note_off_ch(240, 3, 60),
+            end_of_track(),
+        ];
+        let r = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert!(r.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn import_modes_force_drum_or_normal() {
+        let melodic = write_smf(vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()]);
+        let normal =
+            midi_to_project_with_mode(&melodic, "x.mid", None, ImportMode::Normal).unwrap();
+        assert!(!normal.project.tracks[0].drum_mode);
+        let drum = midi_to_project_with_mode(&melodic, "x.mid", None, ImportMode::Drum).unwrap();
+        assert!(drum.project.tracks[0].drum_mode);
+
+        let gm_drum = write_smf(vec![
+            note_on_ch(0, 9, 38, 100),
+            note_off_ch(240, 9, 38),
+            end_of_track(),
+        ]);
+        let forced_normal =
+            midi_to_project_with_mode(&gm_drum, "x.mid", None, ImportMode::Normal).unwrap();
+        assert!(!forced_normal.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn import_mode_from_str() {
+        assert_eq!(ImportMode::from_str_or_auto("normal"), ImportMode::Normal);
+        assert_eq!(ImportMode::from_str_or_auto("drum"), ImportMode::Drum);
+        assert_eq!(ImportMode::from_str_or_auto("auto"), ImportMode::Auto);
+        assert_eq!(ImportMode::from_str_or_auto("???"), ImportMode::Auto);
     }
 }
