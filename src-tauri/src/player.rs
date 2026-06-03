@@ -140,9 +140,17 @@ impl Player {
 fn interleave(left: &[f32], right: &[f32]) -> Vec<f32> {
     let n = left.len().max(right.len());
     let mut out = Vec::with_capacity(n * 2);
-    for i in 0..n {
-        out.push(left.get(i).copied().unwrap_or(0.0));
-        out.push(right.get(i).copied().unwrap_or(0.0));
+    if left.len() == right.len() {
+        // 通常のミックスは左右同長。境界チェック無しでまとめて詰める。
+        for (&l, &r) in left.iter().zip(right.iter()) {
+            out.push(l);
+            out.push(r);
+        }
+    } else {
+        for i in 0..n {
+            out.push(left.get(i).copied().unwrap_or(0.0));
+            out.push(right.get(i).copied().unwrap_or(0.0));
+        }
     }
     out
 }

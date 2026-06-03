@@ -12,6 +12,9 @@ repository = "https://github.com/kongyo2/midi2otomad"
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
-strip = true
+panic = "abort"
+# strip を有効にすると wasm の target_features セクションが落ち、release の wasm-opt が
+# 必要な機能を判別できず失敗する。シンボルは wasm-opt 側で除去されるため false のままにする。
+strip = false
