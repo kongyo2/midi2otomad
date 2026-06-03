@@ -3,7 +3,7 @@
 //! 渡すと素材ライブラリ・マスター設定・リバーブ送り・ポリフォニーを引き継ぐ。
 
 use crate::schema::{
-    AutomationPoint, Note, Polyphony, Project, Sample, Tempo, Track, TrackDynamics,
+    AutomationPoint, BendPoint, Note, Polyphony, Project, Sample, Tempo, Track, TrackDynamics,
 };
 use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use std::collections::HashMap;
@@ -107,6 +107,8 @@ struct RawTrack {
     notes: Vec<RawNote>,
     volume: Vec<(u64, f64)>,
     expression: Vec<(u64, f64)>,
+    pitch_bend: Vec<(u64, f64)>,
+    percussion: bool,
 }
 
 pub fn midi_to_project(
@@ -137,6 +139,8 @@ pub fn midi_to_project(
         let mut notes: Vec<RawNote> = Vec::new();
         let mut volume: Vec<(u64, f64)> = Vec::new();
         let mut expression: Vec<(u64, f64)> = Vec::new();
+        let mut pitch_bend: Vec<(u64, f64)> = Vec::new();
+        let mut percussion = false;
         let mut active: HashMap<(u8, u8), Vec<(u64, u8)>> = HashMap::new();
 
         for event in track {
@@ -150,6 +154,9 @@ pub fn midi_to_project(
                 TrackEventKind::Midi { channel, message } => match message {
                     MidiMessage::NoteOn { key, vel } => {
                         if vel.as_int() > 0 {
+                            if channel.as_int() == 9 {
+                                percussion = true;
+                            }
                             active
                                 .entry((channel.as_int(), key.as_int()))
                                 .or_default()
@@ -178,6 +185,7 @@ pub fn midi_to_project(
                         11 => expression.push((tick, value.as_int() as f64 / 127.0)),
                         _ => {}
                     },
+                    MidiMessage::PitchBend { bend } => pitch_bend.push((tick, bend.as_f64())),
                     _ => {}
                 },
                 _ => {}
@@ -191,6 +199,8 @@ pub fn midi_to_project(
                 notes,
                 volume,
                 expression,
+                pitch_bend,
+                percussion,
             });
         }
     }
@@ -200,11 +210,15 @@ pub fn midi_to_project(
     let fallback_sample_id = previous_samples.first().map(|s| s.id.clone());
     let mut previous_sends: HashMap<usize, f64> = HashMap::new();
     let mut previous_polyphony: HashMap<usize, Polyphony> = HashMap::new();
+    let mut previous_fixed: HashMap<usize, bool> = HashMap::new();
+    let mut previous_bend_range: HashMap<usize, f64> = HashMap::new();
     if let Some(prev) = previous {
         for track in &prev.tracks {
             if let Some(idx) = track.midi_index {
                 previous_sends.insert(idx as usize, track.reverb_send);
                 previous_polyphony.insert(idx as usize, track.polyphony.clone());
+                previous_fixed.insert(idx as usize, track.fixed_pitch);
+                previous_bend_range.insert(idx as usize, track.bend_range);
             }
         }
     }
@@ -244,6 +258,14 @@ pub fn midi_to_project(
             } else {
                 raw.name.clone()
             };
+            let pitch_bend: Vec<BendPoint> = raw
+                .pitch_bend
+                .iter()
+                .map(|&(tick, value)| BendPoint {
+                    t: time_map.seconds_at(tick).max(0.0),
+                    value: value.clamp(-1.0, 1.0),
+                })
+                .collect();
             Track {
                 id: crate::id::make_id("track"),
                 name,
@@ -265,6 +287,15 @@ pub fn midi_to_project(
                     .get(&raw.midi_index)
                     .cloned()
                     .unwrap_or_default(),
+                fixed_pitch: previous_fixed
+                    .get(&raw.midi_index)
+                    .copied()
+                    .unwrap_or(raw.percussion),
+                bend_range: previous_bend_range
+                    .get(&raw.midi_index)
+                    .copied()
+                    .unwrap_or(2.0),
+                pitch_bend,
             }
         })
         .collect();
@@ -648,6 +679,89 @@ mod tests {
             crate::schema::VoicePriority::Oldest
         );
         assert_eq!(track.polyphony.stop_mode, crate::schema::StopMode::Pitch);
+    }
+
+    #[test]
+    fn imports_pitch_bend_as_track_automation() {
+        let bend = |tick: u32, value: f64| TrackEvent {
+            delta: delta(tick),
+            kind: TrackEventKind::Midi {
+                channel: 0.into(),
+                message: MidiMessage::PitchBend {
+                    bend: midly::PitchBend::from_f64(value),
+                },
+            },
+        };
+        let events = vec![
+            note_on(0, 60, 100),
+            bend(0, 0.0),
+            bend(240, 0.5),
+            note_off(240, 60),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let track = &result.project.tracks[0];
+        assert_eq!(track.pitch_bend.len(), 2);
+        assert!((track.pitch_bend[0].value - 0.0).abs() < 1e-3);
+        assert!((track.pitch_bend[1].value - 0.5).abs() < 1e-3);
+        assert!(track.pitch_bend[1].t > 0.0);
+        // 既定ベンドレンジは ±2 半音。
+        assert!((track.bend_range - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn channel_ten_is_detected_as_drums() {
+        let on = |ch: u8| TrackEvent {
+            delta: delta(0),
+            kind: TrackEventKind::Midi {
+                channel: midly::num::u4::new(ch),
+                message: MidiMessage::NoteOn {
+                    key: u7::new(38),
+                    vel: u7::new(100),
+                },
+            },
+        };
+        let off = |ch: u8| TrackEvent {
+            delta: delta(240),
+            kind: TrackEventKind::Midi {
+                channel: midly::num::u4::new(ch),
+                message: MidiMessage::NoteOff {
+                    key: u7::new(38),
+                    vel: u7::new(0),
+                },
+            },
+        };
+        // MIDI チャンネル 10（0 始まりで 9）は GM パーカッション → fixed_pitch 自動 ON。
+        let drums = midi_to_project(
+            &write_smf(vec![on(9), off(9), end_of_track()]),
+            "d.mid",
+            None,
+        )
+        .unwrap();
+        assert!(drums.project.tracks[0].fixed_pitch);
+        // 通常チャンネルは固定しない。
+        let melody = midi_to_project(
+            &write_smf(vec![on(0), off(0), end_of_track()]),
+            "m.mid",
+            None,
+        )
+        .unwrap();
+        assert!(!melody.project.tracks[0].fixed_pitch);
+    }
+
+    #[test]
+    fn carries_fixed_pitch_and_bend_range_from_previous() {
+        let previous = crate::schema::parse_project(serde_json::json!({
+            "version": 1, "name": "prev",
+            "samples": [{ "id": "k", "name": "k" }],
+            "tracks": [{ "id": "old", "name": "old", "midiIndex": 0, "fixedPitch": true, "bendRange": 7 }]
+        }))
+        .unwrap();
+        let events = vec![note_on(0, 60, 100), note_off(240, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", Some(&previous)).unwrap();
+        let track = &result.project.tracks[0];
+        assert!(track.fixed_pitch);
+        assert!((track.bend_range - 7.0).abs() < 1e-9);
     }
 
     #[test]

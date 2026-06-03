@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use leptos::prelude::*;
+use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{create_sample, Loop, Project, Sample, Track};
 use wasm_bindgen_futures::spawn_local;
 
@@ -263,6 +264,29 @@ impl Studio {
             // 試聴はプレイヤーのバッファを差し替えるので、次の再生/シークで
             // プロジェクトのミックスを必ず再レンダリングさせる。
             this.mark_dirty();
+        });
+    }
+
+    pub fn detect_pitch(&self, sample_id: String) {
+        let this = *self;
+        spawn_local(async move {
+            match api::detect_pitch(&sample_id).await {
+                Ok(Some(d)) => {
+                    this.update_sample(&sample_id, move |s| {
+                        s.base_pitch = d.base_pitch;
+                        s.tune_cents = d.tune_cents.clamp(-100.0, 100.0);
+                    });
+                    this.show_toast(format!(
+                        "ピッチを検出: {} ({:.1} Hz)",
+                        midi_to_note_name(d.base_pitch as f64),
+                        d.hz
+                    ));
+                }
+                Ok(None) => {
+                    this.show_toast("ピッチを検出できませんでした（単音の素材でお試しください）")
+                }
+                Err(e) => this.show_toast(format!("ピッチ検出に失敗しました: {e}")),
+            }
         });
     }
 

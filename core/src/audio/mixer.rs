@@ -4,11 +4,15 @@
 use super::envelope::envelope_level;
 use super::filter::{create_biquad_state, design_biquad, process_biquad_sample, BiquadCoeffs};
 use super::lfo::lfo_value;
+use super::oneshot::{leading_trim, remove_dc};
 use super::pitchmod::pitch_offset_semitones;
 use super::polyphony::{allocate_voices, VoiceRequest};
 use super::reverb::{create_reverb, reverb_decay_seconds, ReverbParams};
+use super::timestretch::time_stretch;
 use crate::music::{pitch_ratio, semitones_to_ratio};
-use crate::schema::{AutomationPoint, Filter, InterpolationMode, Note, Project, Sample, Track};
+use crate::schema::{
+    AutomationPoint, BendPoint, Filter, InterpolationMode, Note, Project, Sample, Track,
+};
 use std::collections::HashMap;
 
 /// デコード済みの素材音声。チャンネルごとに 1 本の `Vec<f32>`、長さはすべて同じ。
@@ -101,6 +105,25 @@ pub fn velocity_to_gain(velocity: f64) -> f64 {
     v.powf(1.35)
 }
 
+/// タイムストレッチを適用する最小・最大の伸長率。ごく短い伸長は素の再生で十分なので避け、
+/// 上限で 1 ノートあたりの計算量を抑える。
+const STRETCH_MIN: f64 = 1.05;
+const STRETCH_MAX: f64 = 16.0;
+
+/// このノートでソースを読む基準速度比。`fixed_pitch` のトラックはノート番号を無視し、
+/// 素材を原音ピッチ（チューンのみ反映）で鳴らす（ドラム/ワンショットキット保護）。
+fn note_ratio(note: &Note, sample: &Sample, track: &Track) -> f64 {
+    if track.fixed_pitch {
+        semitones_to_ratio(sample.tune_cents / 100.0)
+    } else {
+        pitch_ratio(
+            note.pitch as f64,
+            sample.base_pitch as f64,
+            sample.tune_cents,
+        )
+    }
+}
+
 /// 自動化点列を時刻 `t` で評価する。`cursor` は線形走査の再開位置を覚えるヒントで、
 /// 単調増加する `t` に対して評価を償却 O(1) にする。返り値は素朴な先頭からの走査と
 /// ビット単位で一致する（`t` 非減少なら走査位置は前方一方向にのみ進む）。
@@ -122,6 +145,48 @@ fn eval_automation(points: &[AutomationPoint], t: f64, cursor: &mut usize) -> f6
         let span = next.t - prev.t;
         prev.v + (next.v - prev.v) * ((t - prev.t) / span)
     }
+}
+
+/// ピッチベンド点列を時刻 `t` で評価する（`[-1, 1]`、最初の点より前は 0）。`cursor` は
+/// 単調増加する `t` に対する線形走査の再開位置で、評価を償却 O(1) にする。
+fn eval_bend(points: &[BendPoint], t: f64, cursor: &mut usize) -> f64 {
+    let len = points.len();
+    if len == 0 || t < points[0].t {
+        return 0.0;
+    }
+    let mut k = (*cursor).max(1);
+    while k < len && points[k].t <= t {
+        k += 1;
+    }
+    *cursor = k;
+    if k >= len {
+        points[len - 1].value
+    } else {
+        let prev = &points[k - 1];
+        let next = &points[k];
+        let span = next.t - prev.t;
+        if span <= 0.0 {
+            next.value
+        } else {
+            prev.value + (next.value - prev.value) * ((t - prev.t) / span)
+        }
+    }
+}
+
+/// トラックのピッチベンドを、出力フレームごとの再生速度比へ展開する。ベンドが無ければ
+/// `None`（ホットパスは従来どおり一定増分）。`bend_range` 半音で正規化値を実音程に直す。
+fn build_track_bend(track: &Track, frames: usize, sample_rate: f64) -> Option<Vec<f32>> {
+    if track.pitch_bend.is_empty() || track.bend_range <= 0.0 {
+        return None;
+    }
+    let mut out = vec![1.0f32; frames];
+    let mut cursor = 1usize;
+    for (i, slot) in out.iter_mut().enumerate() {
+        let t = i as f64 / sample_rate;
+        let semis = eval_bend(&track.pitch_bend, t, &mut cursor) * track.bend_range;
+        *slot = semitones_to_ratio(semis) as f32;
+    }
+    Some(out)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,9 +322,12 @@ fn build_track_dynamics(track: &Track, frames: usize, sample_rate: f64) -> Optio
     Some(out)
 }
 
-fn modulated_cutoff(filter: &Filter, env: f64, t_sec: f64, nyquist: f64) -> f64 {
-    let octaves = filter.env_amount * env
+fn modulated_cutoff(filter: &Filter, env: f64, t_sec: f64, nyquist: f64, vel_oct: f64) -> f64 {
+    let mut octaves = filter.env_amount * env
         + filter.lfo_depth * lfo_value(filter.lfo_shape, t_sec * filter.lfo_hz);
+    if vel_oct != 0.0 {
+        octaves += vel_oct;
+    }
     let cutoff = filter.cutoff_hz * 2f64.powf(octaves);
     cutoff.clamp(20.0, nyquist)
 }
@@ -278,13 +346,10 @@ fn render_note(
     master_gain: f64,
     pan: (f64, f64),
     cut_sec: Option<f64>,
+    track_bend: Option<&[f32]>,
 ) {
     let total = left.len() as i64;
-    let base_ratio = pitch_ratio(
-        note.pitch as f64,
-        sample.base_pitch as f64,
-        sample.tune_cents,
-    );
+    let base_ratio = note_ratio(note, sample, track);
     let base_increment = (src.sample_rate / out_rate) * base_ratio;
     let start_frame = (note.start_sec * out_rate).round() as i64;
     let note_frames = ((note.duration_sec * out_rate).round() as i64).max(1);
@@ -298,7 +363,9 @@ fn render_note(
         Some(cs) => cs + choke_sec,
     };
 
-    let vel_gain = velocity_to_gain(note.velocity as f64);
+    let vel = note.velocity as f64;
+    let vel_gain = sample.velocity.amp(vel);
+    let vel_oct = sample.velocity.cutoff_octaves(vel);
     let static_gain = vel_gain * sample.gain * track.gain * master_gain;
     let loop_region = resolve_loop(sample, src);
     let hermite = sample.interpolation == InterpolationMode::Hermite;
@@ -313,10 +380,15 @@ fn render_note(
     let filter = &sample.filter;
     let filter_modulated = filter.enabled && (filter.env_amount != 0.0 || filter.lfo_depth != 0.0);
     let nyquist = out_rate * 0.49;
+    let vel_factor = if vel_oct != 0.0 {
+        2f64.powf(vel_oct)
+    } else {
+        1.0
+    };
     let static_coeffs: Option<BiquadCoeffs> = if filter.enabled && !filter_modulated {
         Some(design_biquad(
             filter.kind,
-            filter.cutoff_hz.min(nyquist),
+            (filter.cutoff_hz * vel_factor).min(nyquist),
             out_rate,
             filter.q,
             filter.gain_db,
@@ -340,10 +412,19 @@ fn render_note(
         if t_sec >= cut_end_sec {
             break;
         }
-        let increment = if pitch_modulated {
-            base_increment * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t_sec))
-        } else {
-            base_increment
+        let increment = {
+            let base = if pitch_modulated {
+                base_increment
+                    * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t_sec))
+            } else {
+                base_increment
+            };
+            match track_bend {
+                Some(bend) if out_idx >= 0 && (out_idx as usize) < bend.len() => {
+                    base * bend[out_idx as usize] as f64
+                }
+                _ => base,
+            }
         };
         if out_idx < 0 {
             src_pos += increment;
@@ -374,7 +455,7 @@ fn render_note(
                 if filter_modulated {
                     Some(design_biquad(
                         filter.kind,
-                        modulated_cutoff(filter, env, t_sec, nyquist),
+                        modulated_cutoff(filter, env, t_sec, nyquist, vel_oct),
                         out_rate,
                         filter.q,
                         filter.gain_db,
@@ -435,26 +516,97 @@ fn render_note(
 
 /// ボイスがスロットを占有する長さ。ボイス上限の会計に使う。ゲート＋リリース尾を上限とし、
 /// ピッチ変調のない非ループ・ワンショットはソース終端までで更に短く見積もる。
-fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
+fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, track: &Track) -> f64 {
     let gate_plus_release = note.duration_sec + sample.envelope.release_ms / 1000.0;
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
-    if resolve_loop(sample, src).is_some() || pitch_modulated {
+    let stretched = sample.time_stretch && !sample.loop_region.enabled;
+    if resolve_loop(sample, src).is_some() || pitch_modulated || stretched {
         return gate_plus_release;
     }
-    let ratio = pitch_ratio(
-        note.pitch as f64,
-        sample.base_pitch as f64,
-        sample.tune_cents,
-    );
+    let ratio = note_ratio(note, sample, track);
     let one_shot_sec = src.frames as f64 / src.sample_rate / ratio;
     gate_plus_release.min(one_shot_sec)
+}
+
+/// ボイスのソース音声。変換が要らなければ元バンクを借用し、ワンショット処理
+/// （DC 除去・先頭トリム・タイムストレッチ）が要るときだけ加工済みバッファを所有する。
+enum VoiceSource<'a> {
+    Ref(&'a PcmAudio),
+    Owned(PcmAudio),
+}
+
+impl VoiceSource<'_> {
+    fn pcm(&self) -> &PcmAudio {
+        match self {
+            VoiceSource::Ref(p) => p,
+            VoiceSource::Owned(p) => p,
+        }
+    }
+}
+
+/// このボイスで実際に読むソースを用意する。`remove_dc`・`align_start`・`time_stretch`
+/// が無効なら借用（ホットパス不変）。タイムストレッチは音程を保ったままノート長へ
+/// 引き伸ばす（後段の再生速度比 `ratio` を見越して係数 α を決める）。
+fn build_voice_source<'a>(
+    sample: &Sample,
+    src: &'a PcmAudio,
+    note: &Note,
+    track: &Track,
+) -> VoiceSource<'a> {
+    let looping = sample.loop_region.enabled;
+    let want_dc = sample.remove_dc;
+    let want_align = sample.align_start && !looping;
+    let want_stretch = sample.time_stretch && !looping;
+    if !want_dc && !want_align && !want_stretch {
+        return VoiceSource::Ref(src);
+    }
+
+    let mut channels = src.channels.clone();
+    if want_dc {
+        for ch in &mut channels {
+            remove_dc(ch);
+        }
+    }
+    if want_align {
+        let trim = leading_trim(&channels);
+        if trim > 0 {
+            for ch in &mut channels {
+                let cut = trim.min(ch.len());
+                ch.drain(0..cut);
+            }
+        }
+    }
+    if want_stretch {
+        let cond_frames = channels.first().map(|c| c.len()).unwrap_or(0);
+        let src_dur = cond_frames as f64 / src.sample_rate;
+        if src_dur > 0.0 {
+            let ratio = note_ratio(note, sample, track);
+            let alpha = note.duration_sec * ratio / src_dur;
+            if alpha > STRETCH_MIN {
+                let alpha = alpha.min(STRETCH_MAX);
+                for ch in &mut channels {
+                    *ch = time_stretch(ch, alpha, src.sample_rate);
+                }
+            }
+        }
+    }
+
+    let frames = channels.first().map(|c| c.len()).unwrap_or(0);
+    if frames < 2 {
+        return VoiceSource::Ref(src);
+    }
+    VoiceSource::Owned(PcmAudio {
+        sample_rate: src.sample_rate,
+        channels,
+        frames,
+    })
 }
 
 struct PlannedVoice<'a> {
     note: &'a Note,
     sample: &'a Sample,
-    src: &'a PcmAudio,
+    src: VoiceSource<'a>,
     cut_sec: Option<f64>,
     end_sec: f64,
 }
@@ -499,7 +651,7 @@ fn plan_track_voices<'a>(
         .map(|(note, (sample, src))| VoiceRequest {
             pitch: note.pitch,
             start_sec: note.start_sec,
-            duration_sec: sounding_duration_sec(note, sample, src),
+            duration_sec: sounding_duration_sec(note, sample, src, track),
             sample_id: sample.id.clone(),
         })
         .collect();
@@ -519,7 +671,7 @@ fn plan_track_voices<'a>(
             PlannedVoice {
                 note,
                 sample,
-                src,
+                src: build_voice_source(sample, src, note, track),
                 cut_sec,
                 end_sec,
             }
@@ -621,6 +773,7 @@ pub fn mix_project<'a>(
     for tp in &plans {
         let pan = pan_gains(tp.track.pan);
         let track_dyn = build_track_dynamics(tp.track, frames, out_rate);
+        let track_bend = build_track_bend(tp.track, frames, out_rate);
         for voice in &tp.voices {
             let send_ref = send
                 .as_mut()
@@ -628,7 +781,7 @@ pub fn mix_project<'a>(
             render_note(
                 voice.note,
                 voice.sample,
-                voice.src,
+                voice.src.pcm(),
                 tp.track,
                 track_dyn.as_deref(),
                 &mut left,
@@ -638,6 +791,7 @@ pub fn mix_project<'a>(
                 master_gain,
                 pan,
                 voice.cut_sec,
+                track_bend.as_deref(),
             );
         }
     }
@@ -1816,5 +1970,207 @@ mod tests {
             },
         );
         assert!(m.frames >= 1);
+    }
+
+    #[test]
+    fn velocity_amount_zero_ignores_dynamics() {
+        // amount=0 ならベロシティに依らず一定ゲイン（1.0）。
+        let project = make_project(
+            json!([sample_raw(json!({ "velocity": { "amount": 0.0 } }))]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 30 }]
+            }))]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        assert!(close(m.left[50] as f64, 1.0, 4));
+    }
+
+    #[test]
+    fn velocity_maps_to_filter_cutoff() {
+        // amount=0 で振幅は一定にし、to_cutoff の「ベロシティ→明るさ」だけを比較する。
+        let make = |vel: i32| {
+            make_project(
+                json!([sample_raw(json!({
+                    "envelope": { "attackMs": 0, "releaseMs": 0 },
+                    "velocity": { "amount": 0.0, "toCutoff": 4.0 },
+                    "filter": { "enabled": true, "type": "lowpass", "cutoffHz": 80 }
+                }))]),
+                json!([track_raw(json!({
+                    "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": vel }]
+                }))]),
+            )
+        };
+        let hard = mix(
+            &make(127),
+            &bank1("s1", bright_source(1000, 1000.0)),
+            limiter_off(),
+        );
+        let soft = mix(
+            &make(10),
+            &bank1("s1", bright_source(1000, 1000.0)),
+            limiter_off(),
+        );
+        assert!(hard.peak > soft.peak);
+        assert!(all_finite(&hard.left));
+    }
+
+    #[test]
+    fn fixed_pitch_ignores_note_number() {
+        let src = mono_ramp_source(1000);
+        let fixed = |pitch: i32| {
+            make_project(
+                json!([sample_raw(
+                    json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+                )]),
+                json!([track_raw(json!({
+                    "fixedPitch": true,
+                    "notes": [{ "pitch": pitch, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+                }))]),
+            )
+        };
+        let high = mix(&fixed(72), &bank1("s1", src.clone()), limiter_off());
+        let low = mix(&fixed(60), &bank1("s1", src.clone()), limiter_off());
+        // 固定ピッチではノート番号に依らず同じ速度で読む → 出力一致。
+        assert!(close(high.left[100] as f64, low.left[100] as f64, 6));
+
+        let free = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 72, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+            }))]),
+        );
+        let pitched = mix(&free, &bank1("s1", src), limiter_off());
+        assert!((pitched.left[100] as f64 - high.left[100] as f64).abs() > 1e-3);
+    }
+
+    #[test]
+    fn pitch_bend_shifts_playback_speed() {
+        let src = mono_ramp_source(1000);
+        let bent = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({
+                "bendRange": 12, "pitchBend": [{ "t": 0, "value": 1.0 }],
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+            }))]),
+        );
+        let plain = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+            }))]),
+        );
+        let bm = mix(&bent, &bank1("s1", src.clone()), limiter_off());
+        let pm = mix(&plain, &bank1("s1", src), limiter_off());
+        // +12 半音のベンドは 2 倍速で読む → ランプ素材はより先（大きい値）を指す。
+        assert!(bm.left[100] > pm.left[100]);
+        assert!(all_finite(&bm.left));
+    }
+
+    #[test]
+    fn pitch_bend_absent_is_identical() {
+        // ベンド点が無ければ出力はベンド機能導入前とビット単位で不変。
+        let project = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({ "bendRange": 12 }))]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        assert!(all_finite(&m.left) && m.peak > 0.0);
+    }
+
+    #[test]
+    fn align_start_trims_leading_silence() {
+        // 先頭 200 フレームが無音、その後 1.0 の素材。
+        let src = mono_source(1000, 1000.0, |i| if i < 200 { 0.0 } else { 1.0 });
+        let aligned = make_project(
+            json!([sample_raw(
+                json!({ "alignStart": true, "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let raw = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let am = mix(&aligned, &bank1("s1", src.clone()), limiter_off());
+        let rm = mix(&raw, &bank1("s1", src), limiter_off());
+        // 先頭を詰めるので最初のフレームで既に鳴っている。素のままは無音区間。
+        assert!(am.left[10].abs() > 0.5);
+        assert!(rm.left[10].abs() < 0.01);
+    }
+
+    #[test]
+    fn remove_dc_centers_output() {
+        // 0.3 の直流バイアスを持つ素材。
+        let src = mono_source(1000, 1000.0, |i| (i as f64 * 0.3).sin() as f32 * 0.4 + 0.3);
+        let mean = |arr: &[f32]| arr[0..500].iter().map(|&v| v as f64).sum::<f64>() / 500.0;
+        let cleaned = make_project(
+            json!([sample_raw(
+                json!({ "removeDc": true, "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let kept = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let cm = mix(&cleaned, &bank1("s1", src.clone()), limiter_off());
+        let km = mix(&kept, &bank1("s1", src), limiter_off());
+        assert!(mean(&cm.left).abs() < 0.05);
+        assert!(mean(&km.left) > 0.2);
+    }
+
+    #[test]
+    fn time_stretch_sustains_short_one_shot() {
+        // 200 フレーム（0.2s）の短い素材を 1.0s のノートで鳴らす。
+        let stretched = make_project(
+            json!([sample_raw(
+                json!({ "timeStretch": true, "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 1.0, "velocity": 127 }]
+            }))]),
+        );
+        let oneshot = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 1.0, "velocity": 127 }]
+            }))]),
+        );
+        let sm = mix(
+            &stretched,
+            &bank1("s1", const_source(1.0, 200)),
+            limiter_off(),
+        );
+        let om = mix(
+            &oneshot,
+            &bank1("s1", const_source(1.0, 200)),
+            limiter_off(),
+        );
+        // ストレッチはノート長まで持続。素のワンショットは 0.2s で鳴り止む。
+        assert!(sm.left[500].abs() > 0.5);
+        assert!(om.left[500].abs() < 0.01);
+        assert!(all_finite(&sm.left));
     }
 }

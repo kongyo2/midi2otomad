@@ -79,6 +79,14 @@ pub fn TrackInspector() -> impl IntoView {
                 let id_color = id.clone();
                 let id_hint = id.clone();
                 let id_panlabel = id.clone();
+                let id_fixed = id.clone();
+                let id_bendinfo = id.clone();
+
+                let fixed_pitch = {
+                    let id = id.clone();
+                    Signal::derive(move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id).map(|t| t.fixed_pitch).unwrap_or(false)))
+                };
+                let bend_count = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_bendinfo).map(|t| t.pitch_bend.len()).unwrap_or(0));
 
                 let note_count = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_count).map(|t| t.notes.len()).unwrap_or(0));
                 let color = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_color).map(|t| t.color.clone()).unwrap_or_default());
@@ -150,6 +158,30 @@ pub fn TrackInspector() -> impl IntoView {
                             "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"
                         } else {
                             "🎚 各ノートのベロシティを音量に反映します。"
+                        }}
+                    </p>
+
+                    <h3 class="subheading">"ピッチ / ベンド"</h3>
+                    <label class="checkline">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || fixed_pitch.get()
+                            on:change=move |ev| {
+                                let c = event_target_checked(&ev);
+                                s.update_track(&id_fixed, move |t| t.fixed_pitch = c);
+                            }
+                        />
+                        "音程を固定（ドラム/ワンショットキット保護）"
+                    </label>
+                    {range_row("ベンドレンジ", tget!(|t| t.bend_range), 0.0, 24.0, 1.0, |v| format!("±{} st", v as i64), tupd!(|t, v| t.bend_range = v))}
+                    <p class="panel__muted small">
+                        {move || {
+                            let n = bend_count();
+                            if n > 0 {
+                                format!("MIDI ピッチベンド {n} 点をトラック全体に反映します。")
+                            } else {
+                                "MIDI のピッチベンドを取り込むとトラック全体に反映されます。".to_string()
+                            }
                         }}
                     </p>
 

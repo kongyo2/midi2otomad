@@ -95,6 +95,14 @@ pub struct PlayerStatus {
     pub level: f32,
 }
 
+#[derive(Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedPitch {
+    pub base_pitch: i32,
+    pub tune_cents: f64,
+    pub hz: f64,
+}
+
 // --- 引数構造体 -----------------------------------------------------------
 
 #[derive(Serialize)]
@@ -173,6 +181,10 @@ pub async fn remove_sample(id: &str) -> Result<(), String> {
 
 pub async fn preview_sample(sample: &Sample, pitch: Option<i32>) -> Result<(), String> {
     invoke_void("preview_sample", to_args(&PreviewArg { sample, pitch })).await
+}
+
+pub async fn detect_pitch(id: &str) -> Result<Option<DetectedPitch>, String> {
+    invoke("detect_pitch", to_args(&IdArg { id })).await
 }
 
 pub async fn set_mix(project: &Project) -> Result<MixSummary, String> {

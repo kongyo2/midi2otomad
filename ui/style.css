@@ -472,6 +472,17 @@ body {
   align-items: center;
 }
 
+.autopitch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.autopitch .panel__muted {
+  margin: 0;
+}
+
 .loopeditor__wave {
   position: relative;
   border: 1px solid var(--border);

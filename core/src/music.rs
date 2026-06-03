@@ -18,6 +18,19 @@ pub fn pitch_ratio(note_pitch: f64, base_pitch: f64, tune_cents: f64) -> f64 {
     semitones_to_ratio(note_pitch - base_pitch + tune_cents / 100.0)
 }
 
+/// 周波数 (Hz) を（小数を含む）MIDI ノート番号へ。A4 = 440Hz = ノート 69 を基準にする。
+pub fn hz_to_midi(hz: f64) -> f64 {
+    if hz <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    69.0 + 12.0 * (hz / 440.0).log2()
+}
+
+/// （小数を含む）MIDI ノート番号を周波数 (Hz) へ。`hz_to_midi` の逆変換。
+pub fn midi_to_hz(midi: f64) -> f64 {
+    440.0 * 2.0_f64.powf((midi - 69.0) / 12.0)
+}
+
 /// MIDI ノート番号を音名 (例: 60 → "C4") に変換する。範囲外はクランプし、小数は丸める。
 pub fn midi_to_note_name(midi: f64) -> String {
     let clamped = midi.round().clamp(0.0, 127.0) as i32;
@@ -165,6 +178,20 @@ mod tests {
         // 範囲外は端へクランプ。
         assert_eq!(midi_to_note_name(-100.0), "C-1");
         assert_eq!(midi_to_note_name(500.0), "G9");
+    }
+
+    #[test]
+    fn hz_midi_round_trip() {
+        assert!(close(hz_to_midi(440.0), 69.0, 9));
+        assert!(close(midi_to_hz(69.0), 440.0, 6));
+        // A5 = 880Hz = ノート 81、C4 ≈ 261.626Hz = ノート 60。
+        assert!(close(hz_to_midi(880.0), 81.0, 9));
+        assert!(close(midi_to_hz(60.0), 261.6256, 3));
+        for midi in [21.0, 48.0, 60.0, 69.0, 100.0] {
+            assert!(close(hz_to_midi(midi_to_hz(midi)), midi, 9));
+        }
+        assert_eq!(hz_to_midi(0.0), f64::NEG_INFINITY);
+        assert_eq!(hz_to_midi(-5.0), f64::NEG_INFINITY);
     }
 
     #[test]

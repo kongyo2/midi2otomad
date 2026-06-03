@@ -102,6 +102,14 @@ pub struct MediaProbe {
     version: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedPitch {
+    base_pitch: i32,
+    tune_cents: f64,
+    hz: f64,
+}
+
 // --- ヘルパー --------------------------------------------------------------
 
 fn file_stem_name(path: &std::path::Path) -> String {
@@ -287,6 +295,25 @@ fn preview_sample(
 }
 
 #[tauri::command]
+fn detect_pitch(state: State<AppState>, id: String) -> Result<Option<DetectedPitch>, String> {
+    let bank = state
+        .bank
+        .lock()
+        .map_err(|_| "バンクのロックに失敗".to_string())?;
+    let pcm = bank.get(&id).ok_or("素材がデコードされていません")?;
+    let channel = pcm.channels.first().ok_or("素材にチャンネルがありません")?;
+    Ok(
+        midi2otomad_core::audio::detect_base_pitch(channel, pcm.sample_rate).map(|d| {
+            DetectedPitch {
+                base_pitch: d.base_pitch,
+                tune_cents: d.tune_cents,
+                hz: d.hz,
+            }
+        }),
+    )
+}
+
+#[tauri::command]
 fn set_mix(state: State<AppState>, project: Project) -> Result<MixSummary, String> {
     let mix = state.render(&project, MixOptions::default())?;
     load_into_player(&state, &mix);
@@ -424,6 +451,7 @@ pub fn run() {
             ingest_paths,
             remove_sample,
             preview_sample,
+            detect_pitch,
             set_mix,
             play,
             pause,

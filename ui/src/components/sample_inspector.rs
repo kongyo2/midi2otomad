@@ -103,10 +103,29 @@ pub fn SampleInspector() -> impl IntoView {
                         s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.filter.enabled).unwrap_or(false))
                     })
                 };
+                let align_enabled = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.align_start).unwrap_or(false))
+                    })
+                };
+                let dc_enabled = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.remove_dc).unwrap_or(false))
+                    })
+                };
+                let stretch_enabled = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.time_stretch).unwrap_or(false))
+                    })
+                };
 
                 let id_name = id.clone();
                 let id_name2 = id.clone();
                 let id_preview = id.clone();
+                let id_detect = id.clone();
                 let id_loop_en = id.clone();
                 let id_loop_all = id.clone();
                 let id_interp = id.clone();
@@ -118,6 +137,9 @@ pub fn SampleInspector() -> impl IntoView {
                 let id_fshape2 = id.clone();
                 let id_vshape = id.clone();
                 let id_vshape2 = id.clone();
+                let id_align = id.clone();
+                let id_dc = id.clone();
+                let id_stretch = id.clone();
 
                 view! {
                     <div class="panel__head">
@@ -198,6 +220,16 @@ pub fn SampleInspector() -> impl IntoView {
                         </div>
                     </div>
 
+                    <div class="autopitch">
+                        <button
+                            class="btn btn--sm"
+                            title="単音素材の基準ピッチを推定して設定"
+                            on:click=move |_| s.detect_pitch(id_detect.clone())
+                        >
+                            "♪ ピッチ自動検出"
+                        </button>
+                        <span class="panel__muted small">"単音素材の音高を解析して基準ピッチ＋微調整に反映します。"</span>
+                    </div>
                     <div class="grid2">
                         {range_row(
                             "基準ピッチ",
@@ -337,6 +369,56 @@ pub fn SampleInspector() -> impl IntoView {
                             </select>
                         </label>
                     </div>
+
+                    <h3 class="subheading">"ベロシティ"</h3>
+                    <div class="grid2">
+                        {range_row("効き", sget!(|x| x.velocity.amount), 0.0, 1.0, 0.01, |v| format!("{}%", (v * 100.0).round() as i64), supd!(|x, v| x.velocity.amount = v))}
+                        {range_row("カーブ", sget!(|x| x.velocity.curve), 0.1, 8.0, 0.05, |v| format!("{v:.2}"), supd!(|x, v| x.velocity.curve = v))}
+                        {range_row("→カットオフ", sget!(|x| x.velocity.to_cutoff), -8.0, 8.0, 0.1, |v| format!("{v:.1} oct"), supd!(|x, v| x.velocity.to_cutoff = v))}
+                    </div>
+                    <p class="panel__muted small">
+                        "効き 0% でベロシティを無視、カーブで感度を曲げ、→カットオフで強く弾くほど明るくできます。"
+                    </p>
+
+                    <h3 class="subheading">"ワンショット処理 / タイムストレッチ"</h3>
+                    <div class="grid2">
+                        <label class="checkline">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || align_enabled.get()
+                                on:change=move |ev| {
+                                    let c = event_target_checked(&ev);
+                                    s.update_sample(&id_align, move |x| x.align_start = c);
+                                }
+                            />
+                            "頭を立ち上がりへ揃える"
+                        </label>
+                        <label class="checkline">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || dc_enabled.get()
+                                on:change=move |ev| {
+                                    let c = event_target_checked(&ev);
+                                    s.update_sample(&id_dc, move |x| x.remove_dc = c);
+                                }
+                            />
+                            "DC オフセット除去"
+                        </label>
+                        <label class="checkline">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || stretch_enabled.get()
+                                on:change=move |ev| {
+                                    let c = event_target_checked(&ev);
+                                    s.update_sample(&id_stretch, move |x| x.time_stretch = c);
+                                }
+                            />
+                            "タイムストレッチでロングトーン"
+                        </label>
+                    </div>
+                    <p class="panel__muted small">
+                        "タイムストレッチは音程を保ったまま、ループ無しでノート長まで伸ばします（ループ有効時はループ優先）。"
+                    </p>
                 }
                     .into_any()
             }}

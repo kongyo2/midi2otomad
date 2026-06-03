@@ -62,6 +62,12 @@ fn sample_rate_default() -> i32 {
 fn color_default() -> String {
     "#7c5cff".to_string()
 }
+fn velocity_curve_default() -> f64 {
+    1.35
+}
+fn bend_range_default() -> f64 {
+    2.0
+}
 
 // --- 列挙型 ---------------------------------------------------------------
 
@@ -238,6 +244,52 @@ impl Default for PitchMod {
     }
 }
 
+/// ベロシティ（0..127）を音量・音色へ写像する設定。`amount` で効きの強さ、`curve` で
+/// 感度カーブ、`to_cutoff` でフィルターカットオフへの追従量（オクターブ）を決める。
+/// 既定 (`amount = 1`, `curve = 1.35`, `to_cutoff = 0`) は従来のベロシティ→音量カーブと一致する。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Velocity {
+    #[serde(default = "one_f64")]
+    pub amount: f64,
+    #[serde(default = "velocity_curve_default")]
+    pub curve: f64,
+    #[serde(default)]
+    pub to_cutoff: f64,
+}
+
+impl Default for Velocity {
+    fn default() -> Self {
+        Self {
+            amount: 1.0,
+            curve: 1.35,
+            to_cutoff: 0.0,
+        }
+    }
+}
+
+impl Velocity {
+    fn validate(&self) -> Result<(), String> {
+        range("velocity.amount", self.amount, 0.0, 1.0)?;
+        range("velocity.curve", self.curve, 0.1, 8.0)?;
+        range("velocity.toCutoff", self.to_cutoff, -8.0, 8.0)
+    }
+
+    /// ベロシティを `[0, 1]` の振幅倍率へ。`amount = 1` のとき `(vel/127)^curve`。
+    pub fn amp(&self, velocity: f64) -> f64 {
+        let shaped = (velocity.clamp(0.0, 127.0) / 127.0).powf(self.curve);
+        (1.0 - self.amount) + self.amount * shaped
+    }
+
+    /// ベロシティに比例してフィルターカットオフへ足すオクターブ量。
+    pub fn cutoff_octaves(&self, velocity: f64) -> f64 {
+        if self.to_cutoff == 0.0 {
+            return 0.0;
+        }
+        self.to_cutoff * (velocity.clamp(0.0, 127.0) / 127.0)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Loop {
@@ -274,6 +326,17 @@ pub struct Sample {
     pub filter: Filter,
     #[serde(default)]
     pub pitch_mod: PitchMod,
+    #[serde(default)]
+    pub velocity: Velocity,
+    /// ノート長へ音程を保ったまま伸縮する（ループの代わりにロングトーンを自然に持続）。
+    #[serde(default)]
+    pub time_stretch: bool,
+    /// 再生開始を最初の立ち上がり（ゼロ交差）へ揃え、頭の無音を詰めて位相をそろえる。
+    #[serde(default)]
+    pub align_start: bool,
+    /// 直流オフセット（DC バイアス）を除去する。
+    #[serde(default)]
+    pub remove_dc: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -372,6 +435,21 @@ pub struct AutomationPoint {
     pub v: f64,
 }
 
+/// ピッチベンドの自動化点。`value` は `[-1, 1]` の正規化ベンド量で、トラックの
+/// `bend_range`（半音）と掛けて実際の音程オフセットになる。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BendPoint {
+    pub t: f64,
+    pub value: f64,
+}
+
+impl BendPoint {
+    fn validate(&self) -> Result<(), String> {
+        at_least("bend.t", self.t, 0.0)?;
+        range("bend.value", self.value, -1.0, 1.0)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackDynamics {
@@ -410,6 +488,15 @@ pub struct Track {
     pub reverb_send: f64,
     #[serde(default)]
     pub polyphony: Polyphony,
+    /// 音程を固定し、ノート番号で再生速度を変えない（ドラム/ワンショットキット保護）。
+    #[serde(default)]
+    pub fixed_pitch: bool,
+    /// ピッチベンドの最大振れ幅（半音）。標準 MIDI の既定 ±2 半音。
+    #[serde(default = "bend_range_default")]
+    pub bend_range: f64,
+    /// トラック全体に掛かるピッチベンドの自動化（MIDI ピッチベンドから取り込む）。
+    #[serde(default)]
+    pub pitch_bend: Vec<BendPoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -515,7 +602,8 @@ impl Sample {
         self.loop_region.validate()?;
         self.envelope.validate()?;
         self.filter.validate()?;
-        self.pitch_mod.validate()
+        self.pitch_mod.validate()?;
+        self.velocity.validate()
     }
 }
 
@@ -588,6 +676,7 @@ impl Track {
         range("track.gain", self.gain, 0.0, 4.0)?;
         range("track.pan", self.pan, -1.0, 1.0)?;
         range("reverbSend", self.reverb_send, 0.0, 1.0)?;
+        range("bendRange", self.bend_range, 0.0, 24.0)?;
         if let Some(idx) = self.midi_index {
             at_least("midiIndex", idx as f64, 0.0)?;
         }
@@ -595,6 +684,9 @@ impl Track {
             note.validate()?;
         }
         for point in self.dynamics.volume.iter().chain(&self.dynamics.expression) {
+            point.validate()?;
+        }
+        for point in &self.pitch_bend {
             point.validate()?;
         }
         self.polyphony.validate()
@@ -678,6 +770,10 @@ pub fn create_sample(id: &str, name: &str) -> Sample {
         envelope: Envelope::default(),
         filter: Filter::default(),
         pitch_mod: PitchMod::default(),
+        velocity: Velocity::default(),
+        time_stretch: false,
+        align_start: false,
+        remove_dc: false,
     }
 }
 
@@ -1010,5 +1106,85 @@ mod tests {
         assert_eq!(InterpolationMode::default(), InterpolationMode::Hermite);
         assert_eq!(VoicePriority::default(), VoicePriority::Newest);
         assert_eq!(StopMode::default(), StopMode::None);
+    }
+
+    #[test]
+    fn new_option_defaults() {
+        let project = parse_project(json!({
+            "version": 1, "name": "x",
+            "samples": [{ "id": "s", "name": "s" }],
+            "tracks": [{ "id": "t", "name": "t" }]
+        }))
+        .unwrap();
+        let s = &project.samples[0];
+        assert_eq!(s.velocity, Velocity::default());
+        assert_eq!(s.velocity.amount, 1.0);
+        assert_eq!(s.velocity.curve, 1.35);
+        assert_eq!(s.velocity.to_cutoff, 0.0);
+        assert!(!s.time_stretch && !s.align_start && !s.remove_dc);
+        let t = &project.tracks[0];
+        assert!(!t.fixed_pitch);
+        assert_eq!(t.bend_range, 2.0);
+        assert!(t.pitch_bend.is_empty());
+    }
+
+    #[test]
+    fn default_velocity_matches_legacy_curve() {
+        // 既定（amount=1, curve=1.35）は従来のベロシティ→音量カーブと厳密一致。
+        let v = Velocity::default();
+        assert_eq!(v.amp(127.0), 1.0_f64.powf(1.35));
+        assert_eq!(v.amp(64.0), (64.0_f64 / 127.0).powf(1.35));
+        assert_eq!(v.amp(0.0), 0.0);
+        // amount=0 はベロシティを無視して常に 1.0。
+        let flat = Velocity {
+            amount: 0.0,
+            curve: 1.35,
+            to_cutoff: 0.0,
+        };
+        assert_eq!(flat.amp(1.0), 1.0);
+        assert_eq!(flat.amp(127.0), 1.0);
+        // to_cutoff はベロシティ比例のオクターブ量。
+        let bright = Velocity {
+            amount: 1.0,
+            curve: 1.0,
+            to_cutoff: 4.0,
+        };
+        assert_eq!(bright.cutoff_octaves(127.0), 4.0);
+        assert!((bright.cutoff_octaves(64.0) - 4.0 * 64.0 / 127.0).abs() < 1e-12);
+        assert_eq!(v.cutoff_octaves(127.0), 0.0);
+    }
+
+    #[test]
+    fn rejects_invalid_new_options() {
+        for bad in [
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "velocity": { "amount": 1.5 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "velocity": { "amount": -0.1 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "velocity": { "curve": 0.0 } }] }),
+            json!({ "version": 1, "name": "x", "samples": [{ "id": "s", "name": "s", "velocity": { "toCutoff": 9.0 } }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "bendRange": 25 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "bendRange": -1 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "pitchBend": [{ "t": 0, "value": 2 }] }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "pitchBend": [{ "t": -1, "value": 0 }] }] }),
+        ] {
+            assert!(parse_project(bad.clone()).is_err(), "should reject {bad}");
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_new_options() {
+        let project = parse_project(json!({
+            "version": 1, "name": "x",
+            "samples": [{ "id": "s", "name": "s", "timeStretch": true, "alignStart": true, "removeDc": true,
+                "velocity": { "amount": 0.6, "curve": 2.0, "toCutoff": 3.0 } }],
+            "tracks": [{ "id": "t", "name": "t", "fixedPitch": true, "bendRange": 5,
+                "pitchBend": [{ "t": 0, "value": -0.5 }, { "t": 1.0, "value": 0.25 }] }]
+        }))
+        .unwrap();
+        let reparsed = parse_project(serde_json::to_value(&project).unwrap()).unwrap();
+        assert_eq!(project, reparsed);
+        assert!(project.samples[0].time_stretch);
+        assert!(project.tracks[0].fixed_pitch);
+        assert_eq!(project.tracks[0].pitch_bend.len(), 2);
+        assert_eq!(project.tracks[0].bend_range, 5.0);
     }
 }
