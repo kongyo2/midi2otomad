@@ -54,7 +54,7 @@ fn sample_rate_default() -> i32 {
     DEFAULT_SAMPLE_RATE
 }
 fn color_default() -> String {
-    "#7c5cff".to_string()
+    "#ff8a3d".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -745,7 +745,7 @@ mod tests {
         }))
         .unwrap();
         let track = &project.tracks[0];
-        assert_eq!(track.color, "#7c5cff");
+        assert_eq!(track.color, "#ff8a3d");
         assert!(!track.muted);
         assert!(!track.solo);
         assert_eq!(track.gain, 1.0);

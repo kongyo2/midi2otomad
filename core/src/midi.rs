@@ -5,8 +5,8 @@ use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 use std::collections::HashMap;
 
 const TRACK_PALETTE: [&str; 10] = [
-    "#7c5cff", "#36d399", "#f87272", "#fbbd23", "#3abff8", "#e879f9", "#f97316", "#22d3ee",
-    "#a3e635", "#fb7185",
+    "#ff8a3d", "#c8f24e", "#57cfd6", "#ff6b8a", "#ffc24a", "#8ad36b", "#7aa2ff", "#e879c0",
+    "#ff9e64", "#6ee0b0",
 ];
 
 const DEFAULT_TEMPO_US: u32 = 500_000;
