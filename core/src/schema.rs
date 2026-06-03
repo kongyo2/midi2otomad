@@ -239,6 +239,17 @@ pub struct Loop {
     pub end_sec: f64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Trim {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub start_sec: f64,
+    #[serde(default)]
+    pub end_sec: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sample {
@@ -256,6 +267,8 @@ pub struct Sample {
     pub duration_sec: f64,
     #[serde(default)]
     pub interpolation: InterpolationMode,
+    #[serde(default)]
+    pub trim: Trim,
     #[serde(rename = "loop", default)]
     pub loop_region: Loop,
     #[serde(default)]
@@ -494,12 +507,20 @@ impl Loop {
     }
 }
 
+impl Trim {
+    fn validate(&self) -> Result<(), String> {
+        at_least("trim.startSec", self.start_sec, 0.0)?;
+        at_least("trim.endSec", self.end_sec, 0.0)
+    }
+}
+
 impl Sample {
     fn validate(&self) -> Result<(), String> {
         range("basePitch", self.base_pitch as f64, 0.0, 127.0)?;
         range("tuneCents", self.tune_cents, -2400.0, 2400.0)?;
         range("gain", self.gain, 0.0, 4.0)?;
         at_least("durationSec", self.duration_sec, 0.0)?;
+        self.trim.validate()?;
         self.loop_region.validate()?;
         self.envelope.validate()?;
         self.filter.validate()?;
@@ -656,6 +677,7 @@ pub fn create_sample(id: &str, name: &str) -> Sample {
         gain: 1.0,
         duration_sec: 0.0,
         interpolation: InterpolationMode::Hermite,
+        trim: Trim::default(),
         loop_region: Loop::default(),
         envelope: Envelope::default(),
         filter: Filter::default(),
@@ -698,6 +720,8 @@ mod tests {
         assert_eq!(s.tune_cents, 0.0);
         assert_eq!(s.gain, 1.0);
         assert_eq!(s.interpolation, InterpolationMode::Hermite);
+        assert_eq!(s.trim, Trim::default());
+        assert!(!s.trim.enabled);
         assert_eq!(s.loop_region, Loop::default());
         assert_eq!(s.envelope, Envelope::default());
         assert_eq!(s.envelope.attack_ms, 4.0);
@@ -798,6 +822,16 @@ mod tests {
         .is_err());
         assert!(parse_project(json!({
             "version": 1, "name": "x",
+            "samples": [{ "id": "s1", "name": "s", "trim": { "startSec": -0.1 } }]
+        }))
+        .is_err());
+        assert!(parse_project(json!({
+            "version": 1, "name": "x",
+            "samples": [{ "id": "s1", "name": "s", "trim": { "endSec": -1 } }]
+        }))
+        .is_err());
+        assert!(parse_project(json!({
+            "version": 1, "name": "x",
             "samples": [{ "id": "s1", "name": "s", "filter": { "type": "comb" } }]
         }))
         .is_err());
@@ -854,6 +888,8 @@ mod tests {
         assert_eq!(s.base_pitch, DEFAULT_BASE_PITCH);
         assert_eq!(s.gain, 1.0);
         assert_eq!(s.interpolation, InterpolationMode::Hermite);
+        assert!(!s.trim.enabled);
+        assert_eq!(s.trim, Trim::default());
         assert!(!s.loop_region.enabled);
         assert_eq!(s.envelope, Envelope::default());
         assert_eq!(s.filter, Filter::default());
@@ -870,6 +906,7 @@ mod tests {
             "samples": [{
                 "id": "s1", "name": "voice", "fileName": "voice.wav", "basePitch": 62,
                 "tuneCents": -15, "gain": 1.5, "durationSec": 2.5, "interpolation": "linear",
+                "trim": { "enabled": true, "startSec": 0.1, "endSec": 2.0 },
                 "loop": { "enabled": true, "startSec": 0.2, "endSec": 1.8 },
                 "envelope": { "attackMs": 8, "decayMs": 120, "sustain": 0.6, "releaseMs": 200 },
                 "filter": { "enabled": true, "type": "highshelf", "cutoffHz": 5000, "q": 1.2, "gainDb": 6 },

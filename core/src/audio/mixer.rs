@@ -117,19 +117,36 @@ struct LoopRegion {
     length: i64,
 }
 
-fn resolve_loop(sample: &Sample, src: &PcmAudio) -> Option<LoopRegion> {
+fn resolve_trim(sample: &Sample, src: &PcmAudio) -> (i64, i64) {
+    let full = src.frames as i64;
+    if !sample.trim.enabled || full < 2 {
+        return (0, full);
+    }
+    let start = ((sample.trim.start_sec * src.sample_rate).floor().max(0.0) as i64).min(full - 1);
+    let raw_end = if sample.trim.end_sec > sample.trim.start_sec {
+        sample.trim.end_sec
+    } else {
+        full as f64 / src.sample_rate
+    };
+    let end = ((raw_end * src.sample_rate).floor() as i64).clamp(start + 1, full);
+    (start, end)
+}
+
+fn resolve_loop(sample: &Sample, src: &PcmAudio, trim: (i64, i64)) -> Option<LoopRegion> {
     if !sample.loop_region.enabled {
         return None;
     }
-    let start = (sample.loop_region.start_sec * src.sample_rate)
+    let (trim_start, trim_end) = trim;
+    let start = ((sample.loop_region.start_sec * src.sample_rate)
         .floor()
-        .max(0.0) as i64;
+        .max(0.0) as i64)
+        .max(trim_start);
     let raw_end = if sample.loop_region.end_sec > sample.loop_region.start_sec {
         sample.loop_region.end_sec
     } else {
-        src.frames as f64 / src.sample_rate
+        trim_end as f64 / src.sample_rate
     };
-    let end = ((raw_end * src.sample_rate).floor() as i64).min(src.frames as i64);
+    let end = ((raw_end * src.sample_rate).floor() as i64).min(trim_end);
     let length = end - start;
     if length < 2 {
         return None;
@@ -283,7 +300,8 @@ fn render_note(
 
     let vel_gain = velocity_to_gain(note.velocity as f64);
     let static_gain = vel_gain * sample.gain * track.gain * master_gain;
-    let loop_region = resolve_loop(sample, src);
+    let (trim_start, trim_end) = resolve_trim(sample, src);
+    let loop_region = resolve_loop(sample, src, (trim_start, trim_end));
     let hermite = sample.interpolation == InterpolationMode::Hermite;
 
     let ch0 = match src.channels.first() {
@@ -314,7 +332,7 @@ fn render_note(
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
 
-    let mut src_pos = 0.0;
+    let mut src_pos = trim_start as f64;
     for i in 0..voice_frames {
         let out_idx = start_frame + i;
         let t_sec = i as f64 / out_rate;
@@ -345,7 +363,7 @@ fn render_note(
             if pos >= l.start as f64 {
                 region = Some(l);
             }
-        } else if pos >= src.frames as f64 - 1.0 {
+        } else if pos >= trim_end as f64 - 1.0 {
             alive = false;
         }
 
@@ -415,7 +433,8 @@ fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
     let gate_plus_release = note.duration_sec + sample.envelope.release_ms / 1000.0;
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
-    if resolve_loop(sample, src).is_some() || pitch_modulated {
+    let (trim_start, trim_end) = resolve_trim(sample, src);
+    if resolve_loop(sample, src, (trim_start, trim_end)).is_some() || pitch_modulated {
         return gate_plus_release;
     }
     let ratio = pitch_ratio(
@@ -423,7 +442,7 @@ fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio) -> f64 {
         sample.base_pitch as f64,
         sample.tune_cents,
     );
-    let one_shot_sec = src.frames as f64 / src.sample_rate / ratio;
+    let one_shot_sec = (trim_end - trim_start) as f64 / src.sample_rate / ratio;
     gate_plus_release.min(one_shot_sec)
 }
 
@@ -1139,6 +1158,63 @@ mod tests {
             assert!(m.peak > 0.0);
             assert!(all_finite(&m.left));
         }
+    }
+
+    #[test]
+    fn trimming() {
+        let plain = make_project(
+            json!([sample_raw(json!({}))]),
+            json!([track_raw(json!({}))]),
+        );
+        let pm = mix(&plain, &bank1("s1", mono_ramp_source(1000)), limiter_off());
+        assert!(pm.left[0].abs() < 0.05);
+        assert!(pm.left[400].abs() > 0.0);
+
+        let head = make_project(
+            json!([sample_raw(
+                json!({ "trim": { "enabled": true, "startSec": 0.5, "endSec": 0 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let hm = mix(&head, &bank1("s1", mono_ramp_source(1000)), limiter_off());
+        assert!(hm.left[0] > 0.4);
+
+        let tail = make_project(
+            json!([sample_raw(
+                json!({ "trim": { "enabled": true, "startSec": 0, "endSec": 0.3 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let tm = mix(&tail, &bank1("s1", mono_ramp_source(1000)), limiter_off());
+        assert!(tm.left[100].abs() > 0.0);
+        assert_eq!(tm.left[400], 0.0);
+
+        let disabled = make_project(
+            json!([sample_raw(
+                json!({ "trim": { "enabled": false, "startSec": 0.5, "endSec": 0.6 } })
+            )]),
+            json!([track_raw(json!({}))]),
+        );
+        let dm = mix(
+            &disabled,
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        assert!(dm.left[0].abs() < 0.05);
+        assert!(dm.left[400].abs() > 0.0);
+
+        let looped = make_project(
+            json!([sample_raw(json!({
+                "trim": { "enabled": true, "startSec": 0.2, "endSec": 0.6 },
+                "loop": { "enabled": true, "startSec": 0.0, "endSec": 1.0 }
+            }))]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.8, "velocity": 127 }] })
+            )]),
+        );
+        let lm = mix(&looped, &bank1("s1", mono_ramp_source(1000)), limiter_off());
+        assert!(all_finite(&lm.left));
+        assert!(lm.left.iter().all(|&v| v.abs() < 0.7));
     }
 
     #[test]

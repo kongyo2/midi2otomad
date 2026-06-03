@@ -97,6 +97,32 @@ pub fn SampleInspector() -> impl IntoView {
                         s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.loop_region.enabled).unwrap_or(false))
                     })
                 };
+                let trim_sig = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| {
+                            p.samples.iter().find(|t| t.id == id).map(|x| {
+                                let dur = if x.duration_sec > 0.0 { x.duration_sec } else { 1.0 };
+                                let end = if x.trim.end_sec > x.trim.start_sec {
+                                    x.trim.end_sec
+                                } else {
+                                    dur
+                                };
+                                (
+                                    (x.trim.start_sec / dur).clamp(0.0, 1.0),
+                                    (end / dur).clamp(0.0, 1.0),
+                                    x.trim.enabled,
+                                )
+                            })
+                        })
+                    })
+                };
+                let trim_enabled = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.trim.enabled).unwrap_or(false))
+                    })
+                };
                 let filter_enabled = {
                     let id = id.clone();
                     Signal::derive(move || {
@@ -109,6 +135,8 @@ pub fn SampleInspector() -> impl IntoView {
                 let id_preview = id.clone();
                 let id_loop_en = id.clone();
                 let id_loop_all = id.clone();
+                let id_trim_en = id.clone();
+                let id_trim_all = id.clone();
                 let id_interp = id.clone();
                 let id_interp2 = id.clone();
                 let id_ftype = id.clone();
@@ -149,7 +177,60 @@ pub fn SampleInspector() -> impl IntoView {
                     </label>
 
                     <div class="loopeditor">
+                        <div class="loopeditor__wave">
+                            <Waveform
+                                peaks=peaks_sig
+                                loop_region=loop_sig
+                                trim=trim_sig
+                                color="#9d86ff".to_string()
+                                height=96.0
+                            />
+                        </div>
                         <div class="loopeditor__head">
+                            <label class="checkline">
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || trim_enabled.get()
+                                    on:change=move |ev| {
+                                        let c = event_target_checked(&ev);
+                                        s.update_sample(&id_trim_en, move |x| x.trim.enabled = c);
+                                    }
+                                />
+                                "トリミング（不要部分をカット）"
+                            </label>
+                            <button
+                                class="linkbtn"
+                                on:click=move |_| {
+                                    s.update_sample(&id_trim_all, move |x| {
+                                        x.trim.start_sec = 0.0;
+                                        x.trim.end_sec = duration;
+                                    })
+                                }
+                            >
+                                "全体"
+                            </button>
+                        </div>
+                        <div class="grid2">
+                            {range_row(
+                                "トリム開始",
+                                sget!(|x| x.trim.start_sec),
+                                0.0,
+                                duration,
+                                duration / 1000.0,
+                                |v| format!("{v:.3}s"),
+                                supd!(|x, v| x.trim.start_sec = v),
+                            )}
+                            {range_row(
+                                "トリム終了",
+                                sget!(|x| if x.trim.end_sec > x.trim.start_sec { x.trim.end_sec } else { duration }),
+                                0.0,
+                                duration,
+                                duration / 1000.0,
+                                |v| format!("{v:.3}s"),
+                                supd!(|x, v| x.trim.end_sec = v),
+                            )}
+                        </div>
+                        <div class="loopeditor__head loopeditor__head--gap">
                             <label class="checkline">
                                 <input
                                     type="checkbox"
@@ -172,9 +253,6 @@ pub fn SampleInspector() -> impl IntoView {
                             >
                                 "全体"
                             </button>
-                        </div>
-                        <div class="loopeditor__wave">
-                            <Waveform peaks=peaks_sig loop_region=loop_sig color="#9d86ff".to_string() height=96.0 />
                         </div>
                         <div class="grid2">
                             {range_row(
