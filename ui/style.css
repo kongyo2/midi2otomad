@@ -466,11 +466,16 @@ body {
   align-items: center;
 }
 
+.loopeditor__head--gap {
+  margin-top: 16px;
+}
+
 .loopeditor__wave {
   position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+  margin-bottom: 10px;
 }
 
 .waveform {

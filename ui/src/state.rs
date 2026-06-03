@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use leptos::prelude::*;
-use midi2otomad_core::schema::{create_sample, Loop, Project, Sample, Track};
+use midi2otomad_core::schema::{create_sample, Loop, Project, Sample, Track, Trim};
 use wasm_bindgen_futures::spawn_local;
 
 use crate::api::{self, ImportResult, PlayerStatus, SampleDto};
@@ -24,6 +24,11 @@ fn sample_from_dto(dto: &SampleDto) -> Sample {
     let mut s = create_sample(&dto.id, &dto.name);
     s.file_name = dto.file_name.clone();
     s.duration_sec = dto.duration_sec;
+    s.trim = Trim {
+        enabled: false,
+        start_sec: 0.0,
+        end_sec: dto.duration_sec,
+    };
     s.loop_region = Loop {
         enabled: false,
         start_sec: 0.0,
@@ -362,5 +367,7 @@ mod tests {
         assert_eq!(s.duration_sec, 2.5);
         assert!(!s.loop_region.enabled);
         assert_eq!(s.loop_region.end_sec, 2.5);
+        assert!(!s.trim.enabled);
+        assert_eq!(s.trim.end_sec, 2.5);
     }
 }

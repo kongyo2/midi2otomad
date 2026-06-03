@@ -43,6 +43,7 @@ pub fn context_2d(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d
 pub fn Waveform(
     #[prop(into)] peaks: Signal<Vec<f32>>,
     #[prop(into)] loop_region: Signal<Option<(f64, f64, bool)>>,
+    #[prop(into)] trim: Signal<Option<(f64, f64, bool)>>,
     #[prop(into)] color: String,
     height: f64,
 ) -> impl IntoView {
@@ -50,6 +51,7 @@ pub fn Waveform(
     Effect::new(move |_| {
         let peaks = peaks.get();
         let loop_region = loop_region.get();
+        let trim = trim.get();
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
@@ -91,6 +93,26 @@ pub fn Waveform(
         for (i, &value) in peaks.iter().enumerate() {
             let h = (value as f64 * (height - 6.0)).max(1.0);
             ctx.fill_rect(i as f64, mid - h / 2.0, 1.0, h);
+        }
+
+        if let Some((start, end, true)) = trim {
+            let x0 = start * w;
+            let x1 = end * w;
+            ctx.set_fill_style_str("rgba(11,11,15,0.6)");
+            if x0 > 0.0 {
+                ctx.fill_rect(0.0, 0.0, x0, height);
+            }
+            if x1 < w {
+                ctx.fill_rect(x1, 0.0, w - x1, height);
+            }
+            ctx.set_stroke_style_str("rgba(251,189,35,0.95)");
+            ctx.set_line_width(2.0);
+            for x in [x0, x1] {
+                ctx.begin_path();
+                ctx.move_to(x, 0.0);
+                ctx.line_to(x, height);
+                ctx.stroke();
+            }
         }
     });
 

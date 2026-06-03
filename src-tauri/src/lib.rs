@@ -241,7 +241,19 @@ fn preview_sample(
             .lock()
             .map_err(|_| "バンクのロックに失敗".to_string())?;
         let pcm = bank.get(&sample.id).ok_or("素材がデコードされていません")?;
-        let natural = (pcm.frames as f64 / pcm.sample_rate).min(2.2);
+        let clip_sec = pcm.frames as f64 / pcm.sample_rate;
+        let trimmed_sec = if sample.trim.enabled {
+            let start = sample.trim.start_sec.max(0.0);
+            let end = if sample.trim.end_sec > start {
+                sample.trim.end_sec
+            } else {
+                clip_sec
+            };
+            (end.min(clip_sec) - start).max(0.0)
+        } else {
+            clip_sec
+        };
+        let natural = trimmed_sec.min(2.2);
         if sample.loop_region.enabled {
             1.4
         } else {

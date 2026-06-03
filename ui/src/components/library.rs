@@ -56,9 +56,10 @@ pub fn SampleLibrary() -> impl IntoView {
                                             s.peaks.get_untracked().get(&id).map(Vec::as_slice).unwrap_or(&[]),
                                         );
                                         let sub = format!(
-                                            "基準 {} · {:.2}s{}",
+                                            "基準 {} · {:.2}s{}{}",
                                             midi_to_note_name(sample.base_pitch as f64),
                                             sample.duration_sec,
+                                            if sample.trim.enabled { " · ✂trim" } else { "" },
                                             if sample.loop_region.enabled { " · ⟳loop" } else { "" },
                                         );
                                         view! {
