@@ -108,6 +108,20 @@ pub fn detect_pitch_hz(samples: &[f32], sample_rate: f64) -> Option<f64> {
     Some(sample_rate / tau_est)
 }
 
+/// 複数チャンネルから最もエネルギーの高いものを選んで基準ピッチを推定する。片チャンネルが
+/// 無音/微小なステレオ素材でも、信号のある側で検出できる。
+pub fn detect_base_pitch_channels(
+    channels: &[Vec<f32>],
+    sample_rate: f64,
+) -> Option<DetectedPitch> {
+    let best = channels.iter().max_by(|a, b| {
+        let ea: f64 = a.iter().map(|&v| (v as f64) * (v as f64)).sum();
+        let eb: f64 = b.iter().map(|&v| (v as f64) * (v as f64)).sum();
+        ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    detect_base_pitch(best, sample_rate)
+}
+
 /// 基本周波数を推定し、最も近い MIDI ノートとセント微調整に落とし込む。
 pub fn detect_base_pitch(samples: &[f32], sample_rate: f64) -> Option<DetectedPitch> {
     let hz = detect_pitch_hz(samples, sample_rate)?;
@@ -183,6 +197,21 @@ mod tests {
         let sharp = detect_base_pitch(&sine(448.0, 48000.0, 8192), 48000.0).unwrap();
         assert_eq!(sharp.base_pitch, 69);
         assert!(sharp.tune_cents > 15.0);
+    }
+
+    #[test]
+    fn picks_strongest_channel_for_stereo() {
+        // 左チャンネルは無音、右チャンネルに 440Hz。右側で検出できる。
+        let silent = vec![0.0f32; 8192];
+        let tone = sine(440.0, 48000.0, 8192);
+        let d = detect_base_pitch_channels(&[silent.clone(), tone.clone()], 48000.0).unwrap();
+        assert_eq!(d.base_pitch, 69);
+        // 逆順（信号が左）でも同じ。
+        let d2 = detect_base_pitch_channels(&[tone, silent], 48000.0).unwrap();
+        assert_eq!(d2.base_pitch, 69);
+        // 全チャンネル無音なら None。
+        assert!(detect_base_pitch_channels(&[vec![0.0f32; 8192]], 48000.0).is_none());
+        assert!(detect_base_pitch_channels(&[], 48000.0).is_none());
     }
 
     #[test]

@@ -89,6 +89,10 @@ pub fn time_stretch(input: &[f32], factor: f64, sample_rate: f64) -> Vec<f32> {
     let mut out = vec![0.0f32; out_len + frame];
     let mut norm = vec![0.0f32; out_len + frame];
 
+    // フレームは常に入力内に収める（末尾を 0 で埋めない）。終端付近は最後の全フレームを
+    // 繰り返すため、大きな伸長率でもストレッチ後の尾が無音化しない。
+    let max_start = n - frame;
+
     let mut ana_pos = 0.0f64;
     let mut syn_pos = 0usize;
     let mut target: Option<Vec<f32>> = None;
@@ -99,22 +103,19 @@ pub fn time_stretch(input: &[f32], factor: f64, sample_rate: f64) -> Vec<f32> {
             None => 0,
             Some(t) => best_offset(input, base, frame, search, t),
         };
-        let start = (base + delta).clamp(0, n as isize - 1) as usize;
+        let start = (base + delta).clamp(0, max_start as isize) as usize;
 
         for k in 0..frame {
-            let idx = start + k;
-            let s = if idx < n { input[idx] } else { 0.0 };
             let w = window[k];
-            out[syn_pos + k] += s * w;
+            out[syn_pos + k] += input[start + k] * w;
             norm[syn_pos + k] += w;
         }
 
         // 次に一致させたい「自然な続き」は、今置いたフレームから合成ホップ進めた区間。
-        let cont = start + syn_hop;
+        let cont = (start + syn_hop).min(max_start);
         let mut next_target = vec![0.0f32; frame];
         for (k, slot) in next_target.iter_mut().enumerate() {
-            let idx = cont + k;
-            *slot = if idx < n { input[idx] } else { 0.0 };
+            *slot = input[cont + k];
         }
         target = Some(next_target);
 

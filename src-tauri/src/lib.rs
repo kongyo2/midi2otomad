@@ -301,15 +301,17 @@ fn detect_pitch(state: State<AppState>, id: String) -> Result<Option<DetectedPit
         .lock()
         .map_err(|_| "バンクのロックに失敗".to_string())?;
     let pcm = bank.get(&id).ok_or("素材がデコードされていません")?;
-    let channel = pcm.channels.first().ok_or("素材にチャンネルがありません")?;
+    if pcm.channels.is_empty() {
+        return Err("素材にチャンネルがありません".to_string());
+    }
     Ok(
-        midi2otomad_core::audio::detect_base_pitch(channel, pcm.sample_rate).map(|d| {
-            DetectedPitch {
+        midi2otomad_core::audio::detect_base_pitch_channels(&pcm.channels, pcm.sample_rate).map(
+            |d| DetectedPitch {
                 base_pitch: d.base_pitch,
                 tune_cents: d.tune_cents,
                 hz: d.hz,
-            }
-        }),
+            },
+        ),
     )
 }
 

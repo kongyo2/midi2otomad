@@ -388,7 +388,7 @@ fn render_note(
     let static_coeffs: Option<BiquadCoeffs> = if filter.enabled && !filter_modulated {
         Some(design_biquad(
             filter.kind,
-            (filter.cutoff_hz * vel_factor).min(nyquist),
+            (filter.cutoff_hz * vel_factor).clamp(20.0, nyquist),
             out_rate,
             filter.q,
             filter.gain_db,
@@ -514,13 +514,42 @@ fn render_note(
     }
 }
 
+/// このボイスで起こりうる最大の「上ぶり」ピッチ変調を再生速度比で見積もる。グライド始端・
+/// ビブラート上端・ベンド上限を足し合わせた保守的な上界（無ければ 1.0）。タイムストレッチ後の
+/// バッファが上向き変調で早く消費され尽くして無音化しないよう、伸長量に掛けて余裕を持たせる。
+fn max_upward_mod_ratio(sample: &Sample, track: &Track) -> f64 {
+    let pm = &sample.pitch_mod;
+    let mut semis = 0.0;
+    if pm.glide_ms > 0.0 && pm.glide_semitones > 0.0 {
+        semis += pm.glide_semitones;
+    }
+    semis += pm.vibrato_cents / 100.0;
+    if !track.pitch_bend.is_empty() {
+        semis += track.bend_range;
+    }
+    if semis > 0.0 {
+        semitones_to_ratio(semis)
+    } else {
+        1.0
+    }
+}
+
 /// タイムストレッチの伸長率 α。無効・ループ時・微小な伸長（素の再生で十分）は `None`。
 /// 会計（`sounding_duration_sec`）と実レンダリング（`build_voice_source`）で同じ判定を共有する。
-fn stretch_alpha(note: &Note, sample: &Sample, src_dur: f64, ratio: f64) -> Option<f64> {
+/// 目標長はゲート＋リリース（エンベロープが鳴らす全長）とし、上向きピッチ変調の最大読み出し
+/// 速度も見込んで、リリース尾や変調中でもソースが尽きないバッファを確保する。
+fn stretch_alpha(
+    note: &Note,
+    sample: &Sample,
+    track: &Track,
+    src_dur: f64,
+    ratio: f64,
+) -> Option<f64> {
     if !sample.time_stretch || sample.loop_region.enabled || src_dur <= 0.0 {
         return None;
     }
-    let alpha = note.duration_sec * ratio / src_dur;
+    let target = note.duration_sec + sample.envelope.release_ms / 1000.0;
+    let alpha = target * ratio * max_upward_mod_ratio(sample, track) / src_dur;
     if alpha > STRETCH_MIN {
         Some(alpha.min(STRETCH_MAX))
     } else {
@@ -538,7 +567,7 @@ fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, track: &T
     let bend_modulated = !track.pitch_bend.is_empty();
     let ratio = note_ratio(note, sample, track);
     let src_dur = src.frames as f64 / src.sample_rate;
-    let will_stretch = stretch_alpha(note, sample, src_dur, ratio).is_some();
+    let will_stretch = stretch_alpha(note, sample, track, src_dur, ratio).is_some();
     if resolve_loop(sample, src).is_some() || pitch_modulated || bend_modulated || will_stretch {
         return gate_plus_release;
     }
@@ -598,7 +627,7 @@ fn build_voice_source<'a>(
         let cond_frames = channels.first().map(|c| c.len()).unwrap_or(0);
         let src_dur = cond_frames as f64 / src.sample_rate;
         let ratio = note_ratio(note, sample, track);
-        if let Some(alpha) = stretch_alpha(note, sample, src_dur, ratio) {
+        if let Some(alpha) = stretch_alpha(note, sample, track, src_dur, ratio) {
             for ch in &mut channels {
                 *ch = time_stretch(ch, alpha, src.sample_rate);
             }
@@ -2262,5 +2291,51 @@ mod tests {
             0.3,
             6
         ));
+    }
+
+    #[test]
+    fn time_stretch_keeps_release_tail_audible() {
+        // リリース 300ms 付き。ストレッチはゲート＋リリース全体を覆い、尾が無音にならない。
+        let project = make_project(
+            json!([sample_raw(json!({
+                "timeStretch": true,
+                "envelope": { "attackMs": 0, "releaseMs": 300 }
+            }))]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+            }))]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", const_source(1.0, 200)),
+            limiter_off(),
+        );
+        // ゲート(0.5s)後のリリース内 t=0.6s でまだ鳴っている（旧実装はここで無音だった）。
+        assert!(m.left[600].abs() > 0.4);
+        assert!(all_finite(&m.left));
+    }
+
+    #[test]
+    fn time_stretch_survives_upward_bend() {
+        // タイムストレッチ＋上向きベンド(+12半音=2倍速読み)でもノート終盤まで鳴り続ける。
+        let project = make_project(
+            json!([sample_raw(json!({
+                "timeStretch": true,
+                "envelope": { "attackMs": 0, "releaseMs": 0 }
+            }))]),
+            json!([track_raw(json!({
+                "bendRange": 12,
+                "pitchBend": [{ "t": 0, "value": 1.0 }],
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 1.0, "velocity": 127 }]
+            }))]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", const_source(1.0, 200)),
+            limiter_off(),
+        );
+        // 上向きベンドでバッファを早く消費しても、t=0.8s でまだ鳴っている。
+        assert!(m.left[800].abs() > 0.4);
+        assert!(all_finite(&m.left));
     }
 }
