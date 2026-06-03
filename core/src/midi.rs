@@ -124,6 +124,15 @@ struct RawTrack {
 
 type ActiveNotes = HashMap<(u8, u8), Vec<(u64, u8, bool)>>;
 
+struct TrackSpec {
+    notes: Vec<RawNote>,
+    name: String,
+    midi_index: usize,
+    drum_mode: bool,
+    volume: Vec<(u64, f64)>,
+    expression: Vec<(u64, f64)>,
+}
+
 pub fn midi_to_project(
     bytes: &[u8],
     file_name: &str,
@@ -239,12 +248,66 @@ pub fn midi_to_project_with_mode(
         }
     }
 
+    let mut specs: Vec<TrackSpec> = Vec::new();
+    for raw in raw_tracks {
+        let RawTrack {
+            midi_index,
+            name,
+            notes,
+            volume,
+            expression,
+            all_drum,
+        } = raw;
+        let mixed = mode == ImportMode::Auto
+            && notes.iter().any(|n| n.is_drum)
+            && notes.iter().any(|n| !n.is_drum);
+        if mixed {
+            let (drum_notes, melodic_notes): (Vec<RawNote>, Vec<RawNote>) =
+                notes.into_iter().partition(|n| n.is_drum);
+            let drum_name = if name.is_empty() {
+                "ドラム".to_string()
+            } else {
+                format!("{name} (ドラム)")
+            };
+            specs.push(TrackSpec {
+                notes: melodic_notes,
+                name,
+                midi_index,
+                drum_mode: false,
+                volume: volume.clone(),
+                expression: expression.clone(),
+            });
+            specs.push(TrackSpec {
+                notes: drum_notes,
+                name: drum_name,
+                midi_index,
+                drum_mode: true,
+                volume,
+                expression,
+            });
+        } else {
+            let drum_mode = match mode {
+                ImportMode::Normal => false,
+                ImportMode::Drum => true,
+                ImportMode::Auto => all_drum,
+            };
+            specs.push(TrackSpec {
+                notes,
+                name,
+                midi_index,
+                drum_mode,
+                volume,
+                expression,
+            });
+        }
+    }
+
     let mut note_count = 0;
-    let tracks: Vec<Track> = raw_tracks
+    let tracks: Vec<Track> = specs
         .into_iter()
         .enumerate()
-        .map(|(index, raw)| {
-            let notes: Vec<Note> = raw
+        .map(|(index, spec)| {
+            let notes: Vec<Note> = spec
                 .notes
                 .iter()
                 .map(|n| {
@@ -268,36 +331,31 @@ pub fn midi_to_project_with_mode(
                     })
                     .collect()
             };
-            let name = if raw.name.is_empty() {
+            let name = if spec.name.is_empty() {
                 format!("Track {}", index + 1)
             } else {
-                raw.name.clone()
-            };
-            let drum_mode = match mode {
-                ImportMode::Normal => false,
-                ImportMode::Drum => true,
-                ImportMode::Auto => raw.all_drum,
+                spec.name.clone()
             };
             Track {
                 id: crate::id::make_id("track"),
                 name,
-                midi_index: Some(raw.midi_index as i32),
+                midi_index: Some(spec.midi_index as i32),
                 color: TRACK_PALETTE[index % TRACK_PALETTE.len()].to_string(),
                 muted: false,
                 solo: false,
                 gain: 1.0,
                 pan: 0.0,
                 default_sample_id: fallback_sample_id.clone(),
-                drum_mode,
+                drum_mode: spec.drum_mode,
                 note_sample_map: HashMap::new(),
                 notes,
                 dynamics: TrackDynamics {
-                    volume: to_points(&raw.volume),
-                    expression: to_points(&raw.expression),
+                    volume: to_points(&spec.volume),
+                    expression: to_points(&spec.expression),
                 },
-                reverb_send: previous_sends.get(&raw.midi_index).copied().unwrap_or(0.0),
+                reverb_send: previous_sends.get(&spec.midi_index).copied().unwrap_or(0.0),
                 polyphony: previous_polyphony
-                    .get(&raw.midi_index)
+                    .get(&spec.midi_index)
                     .cloned()
                     .unwrap_or_default(),
             }
@@ -773,6 +831,34 @@ mod tests {
         ];
         let r = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
         assert!(!r.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn auto_mode_splits_mixed_melodic_and_drum_tracks() {
+        let mixed = || {
+            vec![
+                note_on_ch(0, 0, 60, 100),
+                note_off_ch(240, 0, 60),
+                note_on_ch(0, 9, 38, 100),
+                note_off_ch(240, 9, 38),
+                end_of_track(),
+            ]
+        };
+        let r = midi_to_project(&write_smf(mixed()), "x.mid", None).unwrap();
+        assert_eq!(r.track_count, 2);
+        assert_eq!(r.note_count, 2);
+        let drum = r.project.tracks.iter().find(|t| t.drum_mode).unwrap();
+        let melodic = r.project.tracks.iter().find(|t| !t.drum_mode).unwrap();
+        assert_eq!(drum.notes.len(), 1);
+        assert_eq!(drum.notes[0].pitch, 38);
+        assert_eq!(melodic.notes.len(), 1);
+        assert_eq!(melodic.notes[0].pitch, 60);
+
+        let normal =
+            midi_to_project_with_mode(&write_smf(mixed()), "x.mid", None, ImportMode::Normal)
+                .unwrap();
+        assert_eq!(normal.track_count, 1);
+        assert!(!normal.project.tracks[0].drum_mode);
     }
 
     #[test]
