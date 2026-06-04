@@ -1,6 +1,7 @@
 pub mod curve;
 pub mod envelope;
 pub mod filter;
+pub mod granular;
 pub mod interpolation;
 pub mod lfo;
 pub mod mixer;

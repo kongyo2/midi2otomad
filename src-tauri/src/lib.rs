@@ -310,7 +310,7 @@ fn detect_pitch(state: State<AppState>, sample: Sample) -> Result<Option<PitchEs
 #[tauri::command]
 fn preview_sample(
     state: State<AppState>,
-    sample: Sample,
+    mut sample: Sample,
     pitch: Option<i32>,
 ) -> Result<(), String> {
     let note_pitch = pitch.unwrap_or(sample.base_pitch);
@@ -333,13 +333,17 @@ fn preview_sample(
             clip_sec
         };
         let natural = trimmed_sec.min(2.2);
-        if sample.loop_region.enabled {
+        if sample.loop_region.enabled && !sample.one_shot {
             1.4
         } else {
             natural
         }
         .max(0.05)
     };
+    if sample.one_shot {
+        sample.one_shot = false;
+        sample.loop_region.enabled = false;
+    }
     let sample_value = serde_json::to_value(&sample).map_err(|e| e.to_string())?;
     let project = parse_project(json!({
         "version": 1,

@@ -1,4 +1,6 @@
-use midi2otomad_core::schema::{FilterType, InterpolationMode, LfoShape, StopMode, VoicePriority};
+use midi2otomad_core::schema::{
+    FilterType, InterpolationMode, LfoShape, PitchMode, StopMode, VoicePriority,
+};
 
 pub trait SelectValue: Copy + Default {
     fn as_value(self) -> &'static str;
@@ -27,6 +29,11 @@ select_value!(InterpolationMode {
     Hermite => "hermite",
     Linear => "linear",
     Sinc => "sinc",
+});
+
+select_value!(PitchMode {
+    Resample => "resample",
+    Granular => "granular",
 });
 
 select_value!(FilterType {
@@ -86,6 +93,16 @@ mod tests {
             InterpolationMode::from_value("???"),
             InterpolationMode::default()
         );
+    }
+
+    #[test]
+    fn pitch_mode_round_trips_and_defaults() {
+        for m in [PitchMode::Resample, PitchMode::Granular] {
+            assert_eq!(PitchMode::from_value(m.as_value()), m);
+        }
+        assert_eq!(PitchMode::Resample.as_value(), "resample");
+        assert_eq!(PitchMode::Granular.as_value(), "granular");
+        assert_eq!(PitchMode::from_value("tape"), PitchMode::default());
     }
 
     #[test]

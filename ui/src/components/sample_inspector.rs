@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{
-    Envelope, Filter, FilterType, InterpolationMode, LfoShape, PitchMod,
+    Envelope, Filter, FilterType, InterpolationMode, LfoShape, PitchMod, PitchMode,
 };
 
 use crate::enums::SelectValue;
@@ -132,6 +132,24 @@ pub fn SampleInspector() -> impl IntoView {
                         s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.filter.enabled).unwrap_or(false))
                     })
                 };
+                let is_granular = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.pitch_mode == PitchMode::Granular).unwrap_or(false))
+                    })
+                };
+                let reverse_on = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.reverse).unwrap_or(false))
+                    })
+                };
+                let oneshot_on = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.one_shot).unwrap_or(false))
+                    })
+                };
                 let envelope_modified = {
                     let id = id.clone();
                     Signal::derive(move || {
@@ -165,6 +183,10 @@ pub fn SampleInspector() -> impl IntoView {
                 let id_trim_all = id.clone();
                 let id_interp = id.clone();
                 let id_interp2 = id.clone();
+                let id_pmode = id.clone();
+                let id_pmode2 = id.clone();
+                let id_reverse = id.clone();
+                let id_oneshot = id.clone();
                 let id_ftype = id.clone();
                 let id_ftype2 = id.clone();
                 let id_fen = id.clone();
@@ -364,6 +386,62 @@ pub fn SampleInspector() -> impl IntoView {
                             </select>
                         </label>
                     </div>
+
+                    <h3 class="subheading">"再生方式（音程と速度）"</h3>
+                    <div class="grid2">
+                        <label class="field">
+                            <span class="field__label">"ピッチ方式"</span>
+                            <select
+                                class="select"
+                                prop:value=move || {
+                                    s.project.with(|p| p.samples.iter().find(|t| t.id == id_pmode).map(|x| x.pitch_mode.as_value()).unwrap_or("resample"))
+                                }
+                                on:change=move |ev| {
+                                    let m = PitchMode::from_value(&event_target_value(&ev));
+                                    s.update_sample(&id_pmode2, move |x| x.pitch_mode = m);
+                                }
+                            >
+                                <option value="resample">"テープ（音程と速度が連動）"</option>
+                                <option value="granular">"タイムストレッチ（音程と速度を分離）"</option>
+                            </select>
+                        </label>
+                        <label class="checkline">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || reverse_on.get()
+                                on:change=move |ev| {
+                                    let c = event_target_checked(&ev);
+                                    s.update_sample(&id_reverse, move |x| x.reverse = c);
+                                }
+                            />
+                            "リバース（逆再生）"
+                        </label>
+                    </div>
+                    <div
+                        class="grid2"
+                        style:display=move || if is_granular.get() { "grid" } else { "none" }
+                    >
+                        {range_row("再生速度", sget!(|x| x.speed), 0.25, 4.0, 0.01, |v| format!("{v:.2}x"), supd!(|x, v| x.speed = v))}
+                        {range_row("グレインサイズ", sget!(|x| x.grain_ms), 5.0, 300.0, 1.0, ms, supd!(|x, v| x.grain_ms = v))}
+                    </div>
+                    <p class="panel__muted small">
+                        {move || if is_granular.get() {
+                            "音程はノートで、速度は上のスライダーで独立に決まります（1.00x = 原音の長さを保つ）。グレインを小さくするほどザラついた質感になります。"
+                        } else {
+                            "テープ方式: 高い音ほど速く、低い音ほど遅く再生されます（サンプラーの定番挙動）。音程だけ変えたい場合はタイムストレッチを選択。"
+                        }}
+                    </p>
+                    <label class="checkline" style:margin-top="4px">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || oneshot_on.get()
+                            on:change=move |ev| {
+                                let c = event_target_checked(&ev);
+                                s.update_sample(&id_oneshot, move |x| x.one_shot = c);
+                            }
+                        />
+                        "ワンショット（ノートの長さを無視して最後まで鳴らす）"
+                    </label>
 
                     <div class="panel__head">
                         <h3 class="subheading">"エンベロープ (DAHDSR)"</h3>
