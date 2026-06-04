@@ -6,6 +6,10 @@
 
 スコープが曖昧なときこそ、価値の高いクリエイティブな一手を加える。
 
+## 音MAD作成ツールとしての観点
+
+実装・改善の際は、音MAD作成ツールとしての UX・品質・表現力を常に考慮して作業する。単に動くことを満たすだけでなく、作り手が直感的に操作でき、表現の幅が広がり、出力の音質が高まる方向を選ぶ。機能を足すときは「音MADを作る人がこれで何を表現できるようになるか」を基準に判断する。
+
 ## Documentation Policy
 
 Do not create or expand Markdown docs unless explicitly asked — unprompted, you tend to clutter the repo with over-citation, paternalistic "helpfulness," and runbooks nobody wanted.

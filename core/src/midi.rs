@@ -239,11 +239,13 @@ pub fn midi_to_project_with_mode(
     let fallback_sample_id = previous_samples.first().map(|s| s.id.clone());
     let mut previous_sends: HashMap<usize, f64> = HashMap::new();
     let mut previous_polyphony: HashMap<usize, Polyphony> = HashMap::new();
+    let mut previous_dynamics_depth: HashMap<usize, f64> = HashMap::new();
     if let Some(prev) = previous {
         for track in &prev.tracks {
             if let Some(idx) = track.midi_index {
                 previous_sends.insert(idx as usize, track.reverb_send);
                 previous_polyphony.insert(idx as usize, track.polyphony.clone());
+                previous_dynamics_depth.insert(idx as usize, track.dynamics_depth);
             }
         }
     }
@@ -353,6 +355,10 @@ pub fn midi_to_project_with_mode(
                     volume: to_points(&spec.volume),
                     expression: to_points(&spec.expression),
                 },
+                dynamics_depth: previous_dynamics_depth
+                    .get(&spec.midi_index)
+                    .copied()
+                    .unwrap_or(1.0),
                 reverb_send: previous_sends.get(&spec.midi_index).copied().unwrap_or(0.0),
                 polyphony: previous_polyphony
                     .get(&spec.midi_index)

@@ -414,6 +414,8 @@ pub struct Track {
     pub notes: Vec<Note>,
     #[serde(default)]
     pub dynamics: TrackDynamics,
+    #[serde(default = "one_f64")]
+    pub dynamics_depth: f64,
     #[serde(default)]
     pub reverb_send: f64,
     #[serde(default)]
@@ -602,6 +604,7 @@ impl Track {
         range("track.gain", self.gain, 0.0, 4.0)?;
         range("track.pan", self.pan, -1.0, 1.0)?;
         range("reverbSend", self.reverb_send, 0.0, 1.0)?;
+        range("dynamicsDepth", self.dynamics_depth, 0.0, 1.0)?;
         if let Some(idx) = self.midi_index {
             at_least("midiIndex", idx as f64, 0.0)?;
         }
@@ -754,6 +757,7 @@ mod tests {
         assert!(!track.drum_mode);
         assert!(track.note_sample_map.is_empty());
         assert_eq!(track.notes[0].velocity, 100);
+        assert_eq!(track.dynamics_depth, 1.0);
     }
 
     #[test]
@@ -927,6 +931,7 @@ mod tests {
                 "defaultSampleId": "s1", "drumMode": true, "noteSampleMap": { "60": "s1", "64": "s1" },
                 "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 90 }],
                 "dynamics": { "volume": [{ "t": 0, "v": 0.8 }], "expression": [{ "t": 1, "v": 0.5 }] },
+                "dynamicsDepth": 0.5,
                 "reverbSend": 0.4,
                 "polyphony": { "maxVoices": 6, "priority": "highest", "stopMode": "sample" }
             }],
@@ -1006,6 +1011,8 @@ mod tests {
             json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "gain": 5 }] }),
             json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "pan": 1.5 }] }),
             json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "midiIndex": -1 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "dynamicsDepth": 1.1 }] }),
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t", "dynamicsDepth": -0.1 }] }),
             json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t",
                 "dynamics": { "volume": [{ "t": 0, "v": 1.5 }] } }] }),
             json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t",
