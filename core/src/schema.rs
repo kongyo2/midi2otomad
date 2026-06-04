@@ -56,6 +56,9 @@ fn sample_rate_default() -> i32 {
 fn color_default() -> String {
     "#ff8a3d".to_string()
 }
+fn grain_ms_default() -> f64 {
+    60.0
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -91,6 +94,15 @@ pub enum InterpolationMode {
     #[default]
     Hermite,
     Sinc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum PitchMode {
+    #[default]
+    Resample,
+    Granular,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +280,16 @@ pub struct Sample {
     pub duration_sec: f64,
     #[serde(default)]
     pub interpolation: InterpolationMode,
+    #[serde(default)]
+    pub pitch_mode: PitchMode,
+    #[serde(default = "one_f64")]
+    pub speed: f64,
+    #[serde(default = "grain_ms_default")]
+    pub grain_ms: f64,
+    #[serde(default)]
+    pub reverse: bool,
+    #[serde(default)]
+    pub one_shot: bool,
     #[serde(default)]
     pub trim: Trim,
     #[serde(rename = "loop", default)]
@@ -526,6 +548,8 @@ impl Sample {
         range("basePitch", self.base_pitch as f64, 0.0, 127.0)?;
         range("tuneCents", self.tune_cents, -2400.0, 2400.0)?;
         range("gain", self.gain, 0.0, 4.0)?;
+        range("speed", self.speed, 0.05, 16.0)?;
+        range("grainMs", self.grain_ms, 5.0, 1000.0)?;
         at_least("durationSec", self.duration_sec, 0.0)?;
         self.trim.validate()?;
         self.loop_region.validate()?;
@@ -685,6 +709,11 @@ pub fn create_sample(id: &str, name: &str) -> Sample {
         gain: 1.0,
         duration_sec: 0.0,
         interpolation: InterpolationMode::Hermite,
+        pitch_mode: PitchMode::Resample,
+        speed: 1.0,
+        grain_ms: 60.0,
+        reverse: false,
+        one_shot: false,
         trim: Trim::default(),
         loop_region: Loop::default(),
         envelope: Envelope::default(),
@@ -729,6 +758,11 @@ mod tests {
         assert_eq!(s.tune_cents, 0.0);
         assert_eq!(s.gain, 1.0);
         assert_eq!(s.interpolation, InterpolationMode::Hermite);
+        assert_eq!(s.pitch_mode, PitchMode::Resample);
+        assert_eq!(s.speed, 1.0);
+        assert_eq!(s.grain_ms, 60.0);
+        assert!(!s.reverse);
+        assert!(!s.one_shot);
         assert_eq!(s.trim, Trim::default());
         assert!(!s.trim.enabled);
         assert_eq!(s.loop_region, Loop::default());
@@ -1042,6 +1076,7 @@ mod tests {
         assert_eq!(FilterType::default(), FilterType::Lowpass);
         assert_eq!(LfoShape::default(), LfoShape::Sine);
         assert_eq!(InterpolationMode::default(), InterpolationMode::Hermite);
+        assert_eq!(PitchMode::default(), PitchMode::Resample);
         assert_eq!(VoicePriority::default(), VoicePriority::Newest);
         assert_eq!(StopMode::default(), StopMode::None);
     }

@@ -1,11 +1,14 @@
 use super::envelope::envelope_level;
 use super::filter::{create_biquad_state, design_biquad, process_biquad_sample, BiquadCoeffs};
+use super::granular::{GrainCloud, DEFAULT_OVERLAP};
 use super::lfo::lfo_value;
 use super::pitchmod::pitch_offset_semitones;
 use super::polyphony::{allocate_voices, VoiceRequest};
 use super::reverb::{create_reverb, reverb_decay_seconds, ReverbParams};
 use crate::music::{pitch_ratio, semitones_to_ratio};
-use crate::schema::{AutomationPoint, Filter, InterpolationMode, Note, Project, Sample, Track};
+use crate::schema::{
+    AutomationPoint, Filter, InterpolationMode, Note, PitchMode, Project, Sample, Track,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -275,6 +278,74 @@ fn modulated_cutoff(filter: &Filter, env: f64, t_sec: f64, nyquist: f64) -> f64 
     cutoff.clamp(20.0, nyquist)
 }
 
+struct Playback {
+    pitch_ratio: f64,
+    speed_ratio: f64,
+    granular: bool,
+    reverse: bool,
+    grain_ms: f64,
+}
+
+fn sample_playback(note: &Note, sample: &Sample, drum_mode: bool) -> Playback {
+    let effective_pitch = if drum_mode {
+        sample.base_pitch
+    } else {
+        note.pitch
+    };
+    let pitch_ratio = pitch_ratio(
+        effective_pitch as f64,
+        sample.base_pitch as f64,
+        sample.tune_cents,
+    );
+    let granular = sample.pitch_mode == PitchMode::Granular;
+    let speed_ratio = if granular {
+        sample.speed.clamp(0.05, 16.0)
+    } else {
+        pitch_ratio
+    };
+    Playback {
+        pitch_ratio,
+        speed_ratio,
+        granular,
+        reverse: sample.reverse,
+        grain_ms: sample.grain_ms,
+    }
+}
+
+fn wrap_loop(pos: f64, region: Option<LoopRegion>) -> f64 {
+    match region {
+        Some(l) if pos >= l.end as f64 => {
+            l.start as f64 + ((pos - l.start as f64) % l.length as f64)
+        }
+        _ => pos,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_lr(
+    ch0: &[f32],
+    ch1: &[f32],
+    mono: bool,
+    frames: usize,
+    pos: f64,
+    interp: InterpolationMode,
+    loop_region: Option<LoopRegion>,
+) -> (f64, f64) {
+    let region = match loop_region {
+        Some(l) if pos >= l.start as f64 => Some(l),
+        _ => None,
+    };
+    if mono {
+        let s = read_sample(ch0, frames, pos, interp, region);
+        (s, s)
+    } else {
+        (
+            read_sample(ch0, frames, pos, interp, region),
+            read_sample(ch1, frames, pos, interp, region),
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_note(
     note: &Note,
@@ -291,22 +362,30 @@ fn render_note(
     cut_sec: Option<f64>,
 ) {
     let total = left.len() as i64;
-    let effective_pitch = if track.drum_mode {
-        sample.base_pitch
+    let play = sample_playback(note, sample, track.drum_mode);
+    let src_rate_ratio = src.sample_rate / out_rate;
+    let base_pitch_increment = src_rate_ratio * play.pitch_ratio;
+    let time_increment = src_rate_ratio * play.speed_ratio;
+    let dir = if play.reverse { -1.0 } else { 1.0 };
+
+    let (trim_start, trim_end) = resolve_trim(sample, src);
+    let loop_region = if play.reverse {
+        None
     } else {
-        note.pitch
+        resolve_loop(sample, src, (trim_start, trim_end))
     };
-    let base_ratio = pitch_ratio(
-        effective_pitch as f64,
-        sample.base_pitch as f64,
-        sample.tune_cents,
-    );
-    let base_increment = (src.sample_rate / out_rate) * base_ratio;
+
     let start_frame = (note.start_sec * out_rate).round() as i64;
-    let note_frames = ((note.duration_sec * out_rate).round() as i64).max(1);
-    let release_frames = ((sample.envelope.release_ms / 1000.0 * out_rate).round() as i64).max(0);
-    let voice_frames = note_frames + release_frames;
-    let gate_sec = note.duration_sec;
+    let release_sec = sample.envelope.release_ms / 1000.0;
+    let one_shot = sample.one_shot && loop_region.is_none();
+    let gate_sec = if one_shot {
+        ((trim_end - trim_start) as f64 / src.sample_rate / play.speed_ratio).max(0.0)
+    } else {
+        note.duration_sec
+    };
+    let gate_frames = ((gate_sec * out_rate).round() as i64).max(1);
+    let release_frames = ((release_sec * out_rate).round() as i64).max(0);
+    let voice_frames = gate_frames + release_frames;
 
     let choke_sec = CHOKE_RELEASE_MS / 1000.0;
     let cut_end_sec = match cut_sec {
@@ -317,9 +396,8 @@ fn render_note(
     let depth = track.dynamics_depth.clamp(0.0, 1.0);
     let vel_gain = velocity_to_gain(note.velocity as f64);
     let note_gain = sample.gain * track.gain * master_gain;
-    let (trim_start, trim_end) = resolve_trim(sample, src);
-    let loop_region = resolve_loop(sample, src, (trim_start, trim_end));
     let interp = sample.interpolation;
+    let frames = src.frames;
 
     let ch0 = match src.channels.first() {
         Some(c) => c.as_slice(),
@@ -349,123 +427,153 @@ fn render_note(
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
 
-    let mut src_pos = trim_start as f64;
+    let start_pos = if dir > 0.0 {
+        trim_start as f64
+    } else {
+        (trim_end - 1).max(trim_start) as f64
+    };
+    let mut src_pos = start_pos;
+    let mut time_pos = start_pos;
+    let mut cloud = if play.granular {
+        Some(GrainCloud::new(
+            play.grain_ms / 1000.0 * out_rate,
+            DEFAULT_OVERLAP,
+        ))
+    } else {
+        None
+    };
+
     for i in 0..voice_frames {
         let out_idx = start_frame + i;
         let t_sec = i as f64 / out_rate;
         if t_sec >= cut_end_sec {
             break;
         }
-        let increment = if pitch_modulated {
-            base_increment * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t_sec))
+        let pitch_increment = if pitch_modulated {
+            base_pitch_increment
+                * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t_sec))
         } else {
-            base_increment
+            base_pitch_increment
         };
+
+        let (raw_l, raw_r, alive) = if let Some(cloud) = cloud.as_mut() {
+            time_pos = wrap_loop(time_pos, loop_region);
+            let spawn = time_pos;
+            let read_adv = dir * pitch_increment;
+            let (l, r) = cloud.process(spawn, read_adv, |p| {
+                read_lr(ch0, ch1, mono, frames, p, interp, loop_region)
+            });
+            time_pos += dir * time_increment;
+            let alive = loop_region.is_some()
+                || cloud.active()
+                || if dir > 0.0 {
+                    time_pos < trim_end as f64
+                } else {
+                    time_pos > trim_start as f64
+                };
+            (l, r, alive)
+        } else {
+            let mut pos = src_pos;
+            let mut alive = true;
+            if let Some(l) = loop_region {
+                if pos >= l.end as f64 {
+                    pos = l.start as f64 + ((pos - l.start as f64) % l.length as f64);
+                }
+            } else if dir > 0.0 {
+                if pos >= trim_end as f64 - 1.0 {
+                    alive = false;
+                }
+            } else if pos <= trim_start as f64 {
+                alive = false;
+            }
+            let (l, r) = if alive {
+                read_lr(ch0, ch1, mono, frames, pos, interp, loop_region)
+            } else {
+                (0.0, 0.0)
+            };
+            src_pos += dir * pitch_increment;
+            (l, r, alive)
+        };
+
         if out_idx < 0 {
-            src_pos += increment;
             continue;
         }
         if out_idx >= total {
             break;
         }
         let out_idx = out_idx as usize;
-
-        let mut pos = src_pos;
-        let mut alive = true;
-        let mut region: Option<LoopRegion> = None;
-        if let Some(l) = loop_region {
-            if pos >= l.end as f64 {
-                pos = l.start as f64 + ((pos - l.start as f64) % l.length as f64);
-            }
-            if pos >= l.start as f64 {
-                region = Some(l);
-            }
-        } else if pos >= trim_end as f64 - 1.0 {
-            alive = false;
+        if !alive {
+            continue;
         }
 
-        if alive {
-            let env = envelope_level(&sample.envelope, t_sec, gate_sec);
-            let coeffs = if filter.enabled {
-                if filter_modulated {
-                    Some(design_biquad(
-                        filter.kind,
-                        modulated_cutoff(filter, env, t_sec, nyquist),
-                        out_rate,
-                        filter.q,
-                        filter.gain_db,
-                    ))
-                } else {
-                    static_coeffs
-                }
+        let env = envelope_level(&sample.envelope, t_sec, gate_sec);
+        let (s_l, s_r) = if filter.enabled {
+            let coeffs = if filter_modulated {
+                Some(design_biquad(
+                    filter.kind,
+                    modulated_cutoff(filter, env, t_sec, nyquist),
+                    out_rate,
+                    filter.q,
+                    filter.gain_db,
+                ))
             } else {
-                None
+                static_coeffs
             };
-            let need_sample = coeffs.is_some() || env > 0.0;
-            let (s_l, s_r) = if !need_sample {
-                (0.0, 0.0)
-            } else if mono {
-                let mut s = read_sample(ch0, src.frames, pos, interp, region);
-                if let Some(c) = coeffs {
-                    s = process_biquad_sample(&c, &mut state_l, s);
+            match coeffs {
+                Some(c) if mono => {
+                    let s = process_biquad_sample(&c, &mut state_l, raw_l);
+                    (s, s)
                 }
-                (s, s)
-            } else {
-                let mut s_l = read_sample(ch0, src.frames, pos, interp, region);
-                let mut s_r = read_sample(ch1, src.frames, pos, interp, region);
-                if let Some(c) = coeffs {
-                    s_l = process_biquad_sample(&c, &mut state_l, s_l);
-                    s_r = process_biquad_sample(&c, &mut state_r, s_r);
-                }
-                (s_l, s_r)
+                Some(c) => (
+                    process_biquad_sample(&c, &mut state_l, raw_l),
+                    process_biquad_sample(&c, &mut state_r, raw_r),
+                ),
+                None => (raw_l, raw_r),
+            }
+        } else {
+            (raw_l, raw_r)
+        };
+
+        if env > 0.0 {
+            let cut_gain = match cut_sec {
+                Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
+                _ => 1.0,
             };
-            if env > 0.0 {
-                let cut_gain = match cut_sec {
-                    Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
-                    _ => 1.0,
-                };
-                let cc_gain = match track_dyn {
-                    None => 1.0,
-                    Some(td) => td[out_idx] as f64,
-                };
-                let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
-                let amp = env * note_gain * dyn_gain * cut_gain;
-                let out_l = s_l * amp * pan.0;
-                let out_r = s_r * amp * pan.1;
-                left[out_idx] = (left[out_idx] as f64 + out_l) as f32;
-                right[out_idx] = (right[out_idx] as f64 + out_r) as f32;
-                if reverb_send > 0.0 {
-                    if let Some((sl, sr)) = send.as_mut() {
-                        sl[out_idx] = (sl[out_idx] as f64 + out_l * reverb_send) as f32;
-                        sr[out_idx] = (sr[out_idx] as f64 + out_r * reverb_send) as f32;
-                    }
+            let cc_gain = match track_dyn {
+                None => 1.0,
+                Some(td) => td[out_idx] as f64,
+            };
+            let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
+            let amp = env * note_gain * dyn_gain * cut_gain;
+            let out_l = s_l * amp * pan.0;
+            let out_r = s_r * amp * pan.1;
+            left[out_idx] = (left[out_idx] as f64 + out_l) as f32;
+            right[out_idx] = (right[out_idx] as f64 + out_r) as f32;
+            if reverb_send > 0.0 {
+                if let Some((sl, sr)) = send.as_mut() {
+                    sl[out_idx] = (sl[out_idx] as f64 + out_l * reverb_send) as f32;
+                    sr[out_idx] = (sr[out_idx] as f64 + out_r * reverb_send) as f32;
                 }
             }
         }
-
-        src_pos += increment;
     }
 }
 
 fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, drum_mode: bool) -> f64 {
-    let gate_plus_release = note.duration_sec + sample.envelope.release_ms / 1000.0;
+    let release = sample.envelope.release_ms / 1000.0;
+    let gate_plus_release = note.duration_sec + release;
+    let play = sample_playback(note, sample, drum_mode);
+    let (trim_start, trim_end) = resolve_trim(sample, src);
+    let looped = !play.reverse && resolve_loop(sample, src, (trim_start, trim_end)).is_some();
+    let one_shot_sec = (trim_end - trim_start) as f64 / src.sample_rate / play.speed_ratio;
+    if sample.one_shot && !looped {
+        return one_shot_sec + release;
+    }
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
-    let (trim_start, trim_end) = resolve_trim(sample, src);
-    if resolve_loop(sample, src, (trim_start, trim_end)).is_some() || pitch_modulated {
+    if looped || pitch_modulated {
         return gate_plus_release;
     }
-    let effective_pitch = if drum_mode {
-        sample.base_pitch
-    } else {
-        note.pitch
-    };
-    let ratio = pitch_ratio(
-        effective_pitch as f64,
-        sample.base_pitch as f64,
-        sample.tune_cents,
-    );
-    let one_shot_sec = (trim_end - trim_start) as f64 / src.sample_rate / ratio;
     gate_plus_release.min(one_shot_sec)
 }
 
@@ -573,8 +681,11 @@ fn plan_track_voices<'a>(
                 .map(|(s, _)| s.envelope.release_ms)
                 .fold(0.0, f64::max)
                 / 1000.0;
+            let natural = requests[alloc.index]
+                .duration_sec
+                .max(note.duration_sec + max_release);
             let end_sec = match cut_sec {
-                None => note.start_sec + note.duration_sec + max_release,
+                None => note.start_sec + natural,
                 Some(cs) => note.start_sec + cs + CHOKE_RELEASE_MS / 1000.0,
             };
             PlannedVoice {
@@ -2080,5 +2191,155 @@ mod tests {
             },
         );
         assert!(m.frames >= 1);
+    }
+
+    fn tone_src(freq: f64, rate: f64, frames: usize) -> PcmAudio {
+        mono_source(frames, rate, |i| {
+            ((2.0 * std::f64::consts::PI * freq * i as f64) / rate).sin() as f32
+        })
+    }
+
+    fn zero_crossings(arr: &[f32], start: usize, end: usize) -> usize {
+        let mut count = 0;
+        for i in start + 1..end.min(arr.len()) {
+            if (arr[i - 1] <= 0.0) != (arr[i] <= 0.0) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn one_shot_ignores_short_note_gate() {
+        let short = json!([{ "pitch": 60, "startSec": 0, "durationSec": 0.05, "velocity": 127 }]);
+        let gated = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({ "notes": short.clone() }))]),
+        );
+        let oneshot = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 }, "oneShot": true })
+            )]),
+            json!([track_raw(json!({ "notes": short }))]),
+        );
+        let g = mix(&gated, &bank1("s1", const_source(1.0, 1000)), limiter_off());
+        let o = mix(
+            &oneshot,
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        assert!(
+            g.left[200].abs() < 0.05,
+            "gated note should stop after its gate"
+        );
+        assert!(o.left[200].abs() > 0.5, "one-shot should keep playing");
+        assert!(
+            o.left[900].abs() > 0.5,
+            "one-shot should play the full sample"
+        );
+    }
+
+    #[test]
+    fn granular_decouples_duration_from_pitch() {
+        let high = json!([{ "pitch": 72, "startSec": 0, "durationSec": 0.05, "velocity": 127 }]);
+        let make = |over: Value| {
+            make_project(
+                json!([sample_raw(merge(
+                    json!({ "envelope": { "attackMs": 0, "releaseMs": 0 }, "oneShot": true }),
+                    over,
+                ))]),
+                json!([track_raw(json!({ "notes": high.clone() }))]),
+            )
+        };
+        let varispeed = mix(
+            &make(json!({})),
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        let granular = mix(
+            &make(json!({ "pitchMode": "granular", "speed": 1.0 })),
+            &bank1("s1", const_source(1.0, 1000)),
+            limiter_off(),
+        );
+        assert!(
+            varispeed.left[600].abs() < 0.05,
+            "+12st varispeed one-shot plays twice as fast and is done by frame 600"
+        );
+        assert!(
+            granular.left[600].abs() > 0.5,
+            "granular keeps the original tempo regardless of pitch"
+        );
+        assert!(
+            granular.left[900].abs() > 0.5,
+            "granular plays the full natural length"
+        );
+    }
+
+    #[test]
+    fn granular_shifts_pitch_up() {
+        let make = |pitch: i64| {
+            make_project(
+                json!([sample_raw(
+                    json!({ "envelope": { "attackMs": 0, "releaseMs": 0 }, "oneShot": true, "pitchMode": "granular", "speed": 1.0, "grainMs": 50 })
+                )]),
+                json!([track_raw(
+                    json!({ "notes": [{ "pitch": pitch, "startSec": 0, "durationSec": 0.05, "velocity": 127 }] })
+                )]),
+            )
+        };
+        let base = mix(
+            &make(60),
+            &bank1("s1", tone_src(50.0, 1000.0, 1000)),
+            limiter_off(),
+        );
+        let octave = mix(
+            &make(72),
+            &bank1("s1", tone_src(50.0, 1000.0, 1000)),
+            limiter_off(),
+        );
+        let zc_base = zero_crossings(&base.left, 200, 700);
+        let zc_octave = zero_crossings(&octave.left, 200, 700);
+        assert!(zc_base > 0);
+        assert!(
+            zc_octave as f64 > zc_base as f64 * 1.5,
+            "an octave up should roughly double the zero-crossing rate (base {zc_base}, octave {zc_octave})"
+        );
+    }
+
+    #[test]
+    fn reverse_reads_from_the_end_first() {
+        let note = json!([{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]);
+        let forward = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 } })
+            )]),
+            json!([track_raw(json!({ "notes": note.clone() }))]),
+        );
+        let reversed = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 }, "reverse": true })
+            )]),
+            json!([track_raw(json!({ "notes": note }))]),
+        );
+        let f = mix(
+            &forward,
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        let r = mix(
+            &reversed,
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        assert!(
+            f.left[10].abs() < 0.2,
+            "forward starts at the ramp's low head"
+        );
+        assert!(
+            r.left[10].abs() > 0.8,
+            "reverse starts at the ramp's high tail"
+        );
     }
 }
