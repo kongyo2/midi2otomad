@@ -6,6 +6,7 @@ use midi2otomad_core::schema::{
 
 use crate::enums::SelectValue;
 use crate::format::format_db;
+use crate::icons::{icon_play, icon_rotate_ccw, icon_target};
 use crate::state::{find_sample, Studio};
 use crate::widgets::{range_row, Waveform};
 
@@ -183,7 +184,8 @@ pub fn SampleInspector() -> impl IntoView {
                                 }
                             }
                         >
-                            "▶ 試聴"
+                            {icon_play()}
+                            "試聴"
                         </button>
                     </div>
 
@@ -308,7 +310,8 @@ pub fn SampleInspector() -> impl IntoView {
                             title="波形から基準ピッチを自動検出"
                             on:click=move |_| s.detect_pitch(id_detect.clone())
                         >
-                            "🎯 自動検出"
+                            {icon_target()}
+                            "自動検出"
                         </button>
                     </div>
                     <div class="grid2">
@@ -370,7 +373,8 @@ pub fn SampleInspector() -> impl IntoView {
                             style:visibility=move || if envelope_modified.get() { "visible" } else { "hidden" }
                             on:click=move |_| s.update_sample(&id_env_reset, |x| x.envelope = Envelope::default())
                         >
-                            "↺ リセット"
+                            {icon_rotate_ccw()}
+                            "リセット"
                         </button>
                     </div>
                     <div class="grid2">
@@ -395,7 +399,8 @@ pub fn SampleInspector() -> impl IntoView {
                                 x.filter = Filter { enabled: x.filter.enabled, ..Filter::default() };
                             })
                         >
-                            "↺ リセット"
+                            {icon_rotate_ccw()}
+                            "リセット"
                         </button>
                     </div>
                     <div class="grid2">
@@ -456,7 +461,8 @@ pub fn SampleInspector() -> impl IntoView {
                             style:visibility=move || if pitch_modified.get() { "visible" } else { "hidden" }
                             on:click=move |_| s.update_sample(&id_pitch_reset, |x| x.pitch_mod = PitchMod::default())
                         >
-                            "↺ リセット"
+                            {icon_rotate_ccw()}
+                            "リセット"
                         </button>
                     </div>
                     <div class="grid2">

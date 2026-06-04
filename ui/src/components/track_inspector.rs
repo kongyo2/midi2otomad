@@ -4,6 +4,7 @@ use midi2otomad_core::schema::{StopMode, VoicePriority};
 
 use crate::enums::SelectValue;
 use crate::format::{format_db, pct};
+use crate::icons::{icon_music, icon_sliders};
 use crate::state::Studio;
 use crate::widgets::range_row;
 
@@ -203,13 +204,13 @@ pub fn TrackInspector() -> impl IntoView {
                                 s.update_track(&id_drum2, move |t| t.drum_mode = !c);
                             }
                         />
-                        "🎵 音程（ピッチ）を反映する"
+                        <span class="inline-label">{icon_music()}"音程（ピッチ）を反映する"</span>
                     </label>
                     <p class="panel__muted small">
                         "オフにすると全ノートを基準ピッチで発音します（ドラム・SE・一定音程の声ネタ向け）。"
                     </p>
 
-                    {range_row("🎚 抑揚（強弱）", tget!(|t| t.dynamics_depth), 0.0, 1.0, 0.01, pct, tupd!(|t, v| t.dynamics_depth = v))}
+                    {range_row(view! { <span class="inline-label">{icon_sliders()}"抑揚（強弱）"</span> }, tget!(|t| t.dynamics_depth), 0.0, 1.0, 0.01, pct, tupd!(|t, v| t.dynamics_depth = v))}
                     <p class="hintline">
                         {move || if has_expression() {
                             "ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。抑揚を下げるほど強弱が平坦になり、0% で一定音量（フラット）になります。"

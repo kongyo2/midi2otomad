@@ -2,6 +2,7 @@ mod api;
 mod components;
 mod enums;
 mod format;
+mod icons;
 mod state;
 mod widgets;
 
@@ -76,7 +77,7 @@ fn App() -> impl IntoView {
             <Show when=move || studio.drag_active.get()>
                 <div class="dropzone-overlay">
                     <div class="dropzone-overlay__card">
-                        <div class="dropzone-overlay__icon">"🎼"</div>
+                        <div class="dropzone-overlay__icon">{icons::icon_import()}</div>
                         <p class="dropzone-overlay__title">"ここにドロップ"</p>
                         <p class="dropzone-overlay__sub">
                             ".mid → アレンジ読込 ／ wav・mp3 → 音声素材として追加"

@@ -3,7 +3,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 pub fn range_row(
-    label: &'static str,
+    label: impl IntoView + 'static,
     value: Signal<f64>,
     min: f64,
     max: f64,
