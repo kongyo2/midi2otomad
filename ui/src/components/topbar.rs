@@ -81,6 +81,7 @@ pub fn TopBar() -> impl IntoView {
                 </button>
                 <button
                     class="transportbtn transportbtn--main"
+                    title=move || if s.status.get().playing { "一時停止" } else { "再生" }
                     on:click=move |_| s.toggle_play()
                 >
                     {move || if s.status.get().playing { icon_pause().into_any() } else { icon_play().into_any() }}

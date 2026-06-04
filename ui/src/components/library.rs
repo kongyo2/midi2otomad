@@ -89,8 +89,8 @@ pub fn SampleLibrary() -> impl IntoView {
                                                         <span class="samplelist__name">{sample.name.clone()}</span>
                                                         <span class="samplelist__sub">
                                                             {sub}
-                                                            {trim_on.then(|| view! { <span class="samplelist__badge samplelist__badge--trim" title="トリム">{icon_scissors()}</span> })}
-                                                            {loop_on.then(|| view! { <span class="samplelist__badge samplelist__badge--loop" title="ループ">{icon_repeat()}</span> })}
+                                                            {trim_on.then(|| view! { <span class="samplelist__badge samplelist__badge--trim" title="トリム">{icon_scissors()}<span class="sr-only">" トリム"</span></span> })}
+                                                            {loop_on.then(|| view! { <span class="samplelist__badge samplelist__badge--loop" title="ループ">{icon_repeat()}<span class="sr-only">" ループ"</span></span> })}
                                                         </span>
                                                     </span>
                                                 </button>
