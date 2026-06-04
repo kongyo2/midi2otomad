@@ -3,7 +3,7 @@ use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{StopMode, VoicePriority};
 
 use crate::enums::SelectValue;
-use crate::format::format_db;
+use crate::format::{format_db, pct};
 use crate::state::Studio;
 use crate::widgets::range_row;
 
@@ -12,6 +12,13 @@ const PRIORITY_OPTIONS: [(&str, &str); 4] = [
     ("oldest", "古い音を優先"),
     ("highest", "高い音を優先"),
     ("lowest", "低い音を優先"),
+];
+
+const PERF_PRESETS: [(&str, bool, f64); 4] = [
+    ("そのまま", false, 1.0),
+    ("音程だけ", false, 0.0),
+    ("抑揚だけ", true, 1.0),
+    ("固定", true, 0.0),
 ];
 
 const STOP_OPTIONS: [(&str, &str); 4] = [
@@ -81,6 +88,8 @@ pub fn TrackInspector() -> impl IntoView {
                 let id_panlabel = id.clone();
                 let id_drum = id.clone();
                 let id_drum2 = id.clone();
+                let id_perf = id.clone();
+                let id_preset = id.clone();
 
                 let note_count = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_count).map(|t| t.notes.len()).unwrap_or(0));
                 let color = move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_color).map(|t| t.color.clone()).unwrap_or_default());
@@ -103,6 +112,15 @@ pub fn TrackInspector() -> impl IntoView {
                             .unwrap_or_default()
                     })
                 };
+                let perf = Signal::derive(move || {
+                    s.project.with(|p| {
+                        p.tracks
+                            .iter()
+                            .find(|t| t.id == id_perf)
+                            .map(|t| (t.drum_mode, t.dynamics_depth))
+                            .unwrap_or((false, 1.0))
+                    })
+                });
 
                 view! {
                     <div class="panel__head">
@@ -147,25 +165,58 @@ pub fn TrackInspector() -> impl IntoView {
 
                     {range_row("リバーブ送り", tget!(|t| t.reverb_send), 0.0, 1.0, 0.01, |v| format!("{}%", (v * 100.0).round() as i64), tupd!(|t, v| t.reverb_send = v))}
 
-                    <p class="hintline">
-                        {move || if has_expression() {
-                            "🎚 ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。"
-                        } else {
-                            "🎚 各ノートのベロシティを音量に反映します。"
-                        }}
-                    </p>
+                    <h3 class="subheading">"演奏表現（MIDI の反映）"</h3>
+                    <div class="chips">
+                        {PERF_PRESETS
+                            .iter()
+                            .map(|&(label, drum, depth)| {
+                                let id_chip = id_preset.clone();
+                                let active = move || {
+                                    let (d, dep) = perf.get();
+                                    d == drum && (dep - depth).abs() < 1e-6
+                                };
+                                view! {
+                                    <button
+                                        class="chip"
+                                        class:chip--active=active
+                                        title="音程（ピッチ）と抑揚（強弱）の組み合わせをまとめて設定"
+                                        on:click=move |_| {
+                                            s.update_track(&id_chip, move |t| {
+                                                t.drum_mode = drum;
+                                                t.dynamics_depth = depth;
+                                            });
+                                        }
+                                    >
+                                        {label}
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
 
                     <label class="checkline">
                         <input
                             type="checkbox"
-                            prop:checked=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_drum).map(|t| t.drum_mode).unwrap_or(false))
+                            prop:checked=move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_drum).map(|t| !t.drum_mode).unwrap_or(true))
                             on:change=move |ev| {
                                 let c = event_target_checked(&ev);
-                                s.update_track(&id_drum2, move |t| t.drum_mode = c);
+                                s.update_track(&id_drum2, move |t| t.drum_mode = !c);
                             }
                         />
-                        "ドラムモード（音程で速度を変えず、ノート番号で素材を選ぶ）"
+                        "🎵 音程（ピッチ）を反映する"
                     </label>
+                    <p class="panel__muted small">
+                        "オフにすると全ノートを基準ピッチで発音します（ドラム・SE・一定音程の声ネタ向け）。"
+                    </p>
+
+                    {range_row("🎚 抑揚（強弱）", tget!(|t| t.dynamics_depth), 0.0, 1.0, 0.01, pct, tupd!(|t, v| t.dynamics_depth = v))}
+                    <p class="hintline">
+                        {move || if has_expression() {
+                            "ベロシティ＋エクスプレッション(CC11)/ボリューム(CC7) を音量に反映します。抑揚を下げるほど強弱が平坦になり、0% で一定音量（フラット）になります。"
+                        } else {
+                            "各ノートのベロシティを音量に反映します。抑揚を下げるほど強弱が平坦になり、0% で一定音量（フラット）になります。"
+                        }}
+                    </p>
 
                     <h3 class="subheading">"ボイス（同時発音）管理"</h3>
                     <label class="field">

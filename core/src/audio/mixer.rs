@@ -90,6 +90,10 @@ pub fn velocity_to_gain(velocity: f64) -> f64 {
     v.powf(1.35)
 }
 
+fn scale_dynamics(value: f64, depth: f64) -> f64 {
+    1.0 + depth * (value - 1.0)
+}
+
 fn eval_automation(points: &[AutomationPoint], t: f64, cursor: &mut usize) -> f64 {
     let len = points.len();
     if len == 0 || t < points[0].t {
@@ -310,8 +314,9 @@ fn render_note(
         Some(cs) => cs + choke_sec,
     };
 
+    let depth = track.dynamics_depth.clamp(0.0, 1.0);
     let vel_gain = velocity_to_gain(note.velocity as f64);
-    let static_gain = vel_gain * sample.gain * track.gain * master_gain;
+    let note_gain = sample.gain * track.gain * master_gain;
     let (trim_start, trim_end) = resolve_trim(sample, src);
     let loop_region = resolve_loop(sample, src, (trim_start, trim_end));
     let interp = sample.interpolation;
@@ -419,11 +424,12 @@ fn render_note(
                     Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
                     _ => 1.0,
                 };
-                let dyn_v = match track_dyn {
+                let cc_gain = match track_dyn {
                     None => 1.0,
                     Some(td) => td[out_idx] as f64,
                 };
-                let amp = env * static_gain * dyn_v * cut_gain;
+                let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
+                let amp = env * note_gain * dyn_gain * cut_gain;
                 let out_l = s_l * amp * pan.0;
                 let out_r = s_r * amp * pan.1;
                 left[out_idx] = (left[out_idx] as f64 + out_l) as f32;
@@ -1013,6 +1019,41 @@ mod tests {
             limiter_off(),
         );
         assert!(close(m.left[100] as f64, 0.25, 4));
+    }
+
+    #[test]
+    fn dynamics_depth_flattens_velocity_and_cc() {
+        let make = |depth: f64, volume: Value| {
+            make_project(
+                json!([sample_raw(json!({}))]),
+                json!([track_raw(json!({
+                    "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 64 }],
+                    "dynamics": { "volume": volume, "expression": [] },
+                    "dynamicsDepth": depth
+                }))]),
+            )
+        };
+        let render = |depth: f64, volume: Value| {
+            mix(
+                &make(depth, volume),
+                &bank1("s1", const_source(1.0, 1000)),
+                limiter_off(),
+            )
+            .left[100] as f64
+        };
+
+        assert!(close(render(1.0, json!([])), velocity_to_gain(64.0), 4));
+        assert!(close(render(0.0, json!([])), 1.0, 4));
+
+        let cc = json!([{ "t": 0.0, "v": 0.5 }]);
+        assert!(close(
+            render(1.0, cc.clone()),
+            velocity_to_gain(64.0) * 0.5,
+            4
+        ));
+        assert!(close(render(0.0, cc.clone()), 1.0, 4));
+        let half = render(0.5, cc);
+        assert!(half > render(1.0, json!([{ "t": 0.0, "v": 0.5 }])) && half < 1.0);
     }
 
     #[test]
