@@ -300,6 +300,50 @@ body::after {
   filter: brightness(1.06);
 }
 
+.perfbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, #322c25, #211c16);
+  color: var(--ink-dim);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 0 var(--rim-hi) inset, 0 2px 4px -2px rgba(0, 0, 0, 0.6);
+  transition: transform 0.08s ease, filter 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease;
+}
+.perfbtn .icon {
+  width: 16px;
+  height: 16px;
+}
+.perfbtn:hover {
+  filter: brightness(1.18);
+  border-color: #4a443b;
+  color: var(--ink);
+}
+.perfbtn:active {
+  transform: translateY(1px);
+}
+.perfbtn--on {
+  color: #16210a;
+  background: radial-gradient(120% 120% at 30% 22%, #d6ff63, var(--lime) 60%, #97c52f);
+  border-color: #d8ff70;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 16px -3px var(--lime-glow),
+    0 1px 0 rgba(255, 255, 255, 0.35) inset;
+}
+.perfbtn--on:hover {
+  filter: brightness(1.05);
+  color: #16210a;
+}
+
 .topbar__time {
   font-family: var(--font-mono);
   font-weight: 700;

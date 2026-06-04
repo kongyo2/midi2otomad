@@ -9,7 +9,9 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use midi2otomad_core::audio::pitch_detect::{calibration_for_hz, detect_fundamental_hz};
-use midi2otomad_core::audio::{build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio};
+use midi2otomad_core::audio::{
+    build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio, RenderQuality,
+};
 use midi2otomad_core::id::make_id;
 use midi2otomad_core::media::{decode_audio, encode_wav};
 use midi2otomad_core::midi::{midi_to_project_with_mode, ImportMode};
@@ -307,11 +309,20 @@ fn detect_pitch(state: State<AppState>, sample: Sample) -> Result<Option<PitchEs
     )
 }
 
+fn quality_for(performance: bool) -> RenderQuality {
+    if performance {
+        RenderQuality::Performance
+    } else {
+        RenderQuality::Full
+    }
+}
+
 #[tauri::command]
 fn preview_sample(
     state: State<AppState>,
     mut sample: Sample,
     pitch: Option<i32>,
+    performance: Option<bool>,
 ) -> Result<(), String> {
     let note_pitch = pitch.unwrap_or(sample.base_pitch);
     let duration = {
@@ -362,6 +373,7 @@ fn preview_sample(
         MixOptions {
             limiter: Some(false),
             tail_sec: Some(0.1),
+            quality: quality_for(performance.unwrap_or(false)),
         },
     )?;
     load_into_player(&state, &mix);
@@ -372,8 +384,18 @@ fn preview_sample(
 }
 
 #[tauri::command]
-fn set_mix(state: State<AppState>, project: Project) -> Result<MixSummary, String> {
-    let mix = state.render(&project, MixOptions::default())?;
+fn set_mix(
+    state: State<AppState>,
+    project: Project,
+    performance: Option<bool>,
+) -> Result<MixSummary, String> {
+    let mix = state.render(
+        &project,
+        MixOptions {
+            quality: quality_for(performance.unwrap_or(false)),
+            ..Default::default()
+        },
+    )?;
     load_into_player(&state, &mix);
     Ok(MixSummary {
         duration_sec: mix.duration_sec,

@@ -33,6 +33,22 @@ pub fn icon_stop() -> impl IntoView {
     }
 }
 
+pub fn icon_zap() -> impl IntoView {
+    view! {
+        <svg
+            class="icon"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linejoin="round"
+            aria-hidden="true"
+        >
+            <polygon points="13 2 4 14 11 14 10 22 20 9 13 9"></polygon>
+        </svg>
+    }
+}
+
 pub fn icon_skip_back() -> impl IntoView {
     view! {
         <svg

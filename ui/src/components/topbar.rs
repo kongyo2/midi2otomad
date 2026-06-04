@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use crate::format::format_time;
-use crate::icons::{icon_download, icon_pause, icon_play, icon_skip_back, icon_stop};
+use crate::icons::{icon_download, icon_pause, icon_play, icon_skip_back, icon_stop, icon_zap};
 use crate::state::{project_duration, Studio};
 
 #[component]
@@ -100,6 +100,18 @@ pub fn TopBar() -> impl IntoView {
                         style:width=move || format!("{}%", level())
                     ></div>
                 </div>
+                <button
+                    class="perfbtn"
+                    class=("perfbtn--on", move || s.performance_mode.get())
+                    title="高パフォーマンスモード — プレビューと再生を軽量・高速にレンダリング（線形補間・フィルター/グラニュラー簡略化）。書き出しは常に高音質。"
+                    on:click=move |_| {
+                        let on = s.performance_mode.get_untracked();
+                        s.set_performance_mode(!on);
+                    }
+                >
+                    {icon_zap()}
+                    <span class="perfbtn__label">"高速"</span>
+                </button>
             </div>
 
             <div class="topbar__group topbar__master">
