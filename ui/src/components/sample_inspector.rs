@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use midi2otomad_core::music::midi_to_note_name;
-use midi2otomad_core::schema::{FilterType, InterpolationMode, LfoShape};
+use midi2otomad_core::schema::{
+    Envelope, Filter, FilterType, InterpolationMode, LfoShape, PitchMod,
+};
 
 use crate::enums::SelectValue;
 use crate::format::format_db;
@@ -129,11 +131,32 @@ pub fn SampleInspector() -> impl IntoView {
                         s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.filter.enabled).unwrap_or(false))
                     })
                 };
+                let envelope_modified = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.envelope != Envelope::default()).unwrap_or(false))
+                    })
+                };
+                let filter_modified = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.filter != Filter { enabled: x.filter.enabled, ..Filter::default() }).unwrap_or(false))
+                    })
+                };
+                let pitch_modified = {
+                    let id = id.clone();
+                    Signal::derive(move || {
+                        s.project.with(|p| p.samples.iter().find(|t| t.id == id).map(|x| x.pitch_mod != PitchMod::default()).unwrap_or(false))
+                    })
+                };
 
                 let id_name = id.clone();
                 let id_name2 = id.clone();
                 let id_preview = id.clone();
                 let id_detect = id.clone();
+                let id_env_reset = id.clone();
+                let id_filter_reset = id.clone();
+                let id_pitch_reset = id.clone();
                 let id_layer = id.clone();
                 let id_loop_en = id.clone();
                 let id_loop_all = id.clone();
@@ -339,7 +362,17 @@ pub fn SampleInspector() -> impl IntoView {
                         </label>
                     </div>
 
-                    <h3 class="subheading">"エンベロープ (DAHDSR)"</h3>
+                    <div class="panel__head">
+                        <h3 class="subheading">"エンベロープ (DAHDSR)"</h3>
+                        <button
+                            class="linkbtn"
+                            title="エンベロープを初期値に戻す"
+                            style:visibility=move || if envelope_modified.get() { "visible" } else { "hidden" }
+                            on:click=move |_| s.update_sample(&id_env_reset, |x| x.envelope = Envelope::default())
+                        >
+                            "↺ リセット"
+                        </button>
+                    </div>
                     <div class="grid2">
                         {range_row("ディレイ", sget!(|x| x.envelope.delay_ms), 0.0, 2000.0, 1.0, ms, supd!(|x, v| x.envelope.delay_ms = v))}
                         {range_row("アタック", sget!(|x| x.envelope.attack_ms), 0.0, 2000.0, 1.0, ms, supd!(|x, v| x.envelope.attack_ms = v))}
@@ -352,7 +385,19 @@ pub fn SampleInspector() -> impl IntoView {
                         {range_row("リリースカーブ", sget!(|x| x.envelope.release_curve), -8.0, 8.0, 0.1, |v| format!("{v:.1}"), supd!(|x, v| x.envelope.release_curve = v))}
                     </div>
 
-                    <h3 class="subheading">"音色フィルター"</h3>
+                    <div class="panel__head">
+                        <h3 class="subheading">"音色フィルター"</h3>
+                        <button
+                            class="linkbtn"
+                            title="フィルターのパラメータを初期値に戻す（オン/オフは保持）"
+                            style:visibility=move || if filter_modified.get() { "visible" } else { "hidden" }
+                            on:click=move |_| s.update_sample(&id_filter_reset, |x| {
+                                x.filter = Filter { enabled: x.filter.enabled, ..Filter::default() };
+                            })
+                        >
+                            "↺ リセット"
+                        </button>
+                    </div>
                     <div class="grid2">
                         <label class="checkline">
                             <input
@@ -403,7 +448,17 @@ pub fn SampleInspector() -> impl IntoView {
                         </label>
                     </div>
 
-                    <h3 class="subheading">"ダイナミックピッチ"</h3>
+                    <div class="panel__head">
+                        <h3 class="subheading">"ダイナミックピッチ"</h3>
+                        <button
+                            class="linkbtn"
+                            title="ダイナミックピッチを初期値に戻す"
+                            style:visibility=move || if pitch_modified.get() { "visible" } else { "hidden" }
+                            on:click=move |_| s.update_sample(&id_pitch_reset, |x| x.pitch_mod = PitchMod::default())
+                        >
+                            "↺ リセット"
+                        </button>
+                    </div>
                     <div class="grid2">
                         {range_row("グライド量", sget!(|x| x.pitch_mod.glide_semitones), -36.0, 36.0, 1.0, |v| format!("{} st", v as i64), supd!(|x, v| x.pitch_mod.glide_semitones = v))}
                         {range_row("グライド時間", sget!(|x| x.pitch_mod.glide_ms), 0.0, 4000.0, 1.0, ms, supd!(|x, v| x.pitch_mod.glide_ms = v))}

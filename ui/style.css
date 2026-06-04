@@ -639,6 +639,12 @@ input[type="checkbox"]:checked::after {
   margin-bottom: 13px;
 }
 
+.headtools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .panel__heading {
   font-family: var(--font-mono);
   font-size: 11px;
