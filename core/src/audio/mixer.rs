@@ -1,4 +1,4 @@
-use super::envelope::envelope_level;
+use super::envelope::EnvShape;
 use super::filter::{create_biquad_state, design_biquad, process_biquad_sample, BiquadCoeffs};
 use super::granular::{GrainCloud, DEFAULT_OVERLAP};
 use super::lfo::lfo_value;
@@ -97,6 +97,15 @@ const MIN_FRAMES: usize = 1;
 const RENDER_BATCH_BYTES: usize = 128 << 20;
 
 const CHOKE_RELEASE_MS: f64 = 5.0;
+
+const PERF_PREVIEW_RATE: f64 = 32000.0;
+
+fn render_rate(project_rate: f64, quality: RenderQuality) -> f64 {
+    match quality {
+        RenderQuality::Performance => project_rate.min(PERF_PREVIEW_RATE),
+        RenderQuality::Full => project_rate,
+    }
+}
 
 pub fn velocity_to_gain(velocity: f64) -> f64 {
     let v = velocity.clamp(0.0, 127.0) / 127.0;
@@ -258,23 +267,6 @@ fn track_renders(track: &Track, solo: bool) -> bool {
     !track.muted && (!solo || track.solo)
 }
 
-fn build_track_dynamics(track: &Track, frames: usize, sample_rate: f64) -> Option<Vec<f32>> {
-    let volume = &track.dynamics.volume;
-    let expression = &track.dynamics.expression;
-    if volume.is_empty() && expression.is_empty() {
-        return None;
-    }
-    let mut out = vec![0.0f32; frames];
-    let mut volume_cursor = 1usize;
-    let mut expression_cursor = 1usize;
-    for (i, slot) in out.iter_mut().enumerate() {
-        let t = i as f64 / sample_rate;
-        *slot = (eval_automation(volume, t, &mut volume_cursor)
-            * eval_automation(expression, t, &mut expression_cursor)) as f32;
-    }
-    Some(out)
-}
-
 fn modulated_cutoff(filter: &Filter, env: f64, t_sec: f64, nyquist: f64) -> f64 {
     let octaves = filter.env_amount * env
         + filter.lfo_depth * lfo_value(filter.lfo_shape, t_sec * filter.lfo_hz);
@@ -401,16 +393,17 @@ struct RenderJob<'a> {
     sample: &'a Sample,
     src: &'a PcmAudio,
     track: &'a Track,
-    track_dyn: Option<&'a [f32]>,
+    vol: &'a [AutomationPoint],
+    expr: &'a [AutomationPoint],
     pan: (f64, f64),
     cut_sec: Option<f64>,
 }
 
 struct VoiceRender {
     start: usize,
-    left: Vec<f64>,
-    right: Vec<f64>,
-    send: Option<(Vec<f64>, Vec<f64>)>,
+    left: Vec<f32>,
+    right: Vec<f32>,
+    send: Option<(Vec<f32>, Vec<f32>)>,
 }
 
 impl VoiceRender {
@@ -430,7 +423,8 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
         sample,
         src,
         track,
-        track_dyn,
+        vol,
+        expr,
         pan,
         cut_sec,
     } = *job;
@@ -533,17 +527,23 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
         None
     };
 
-    let mut out_left = vec![0.0f64; window_len];
-    let mut out_right = vec![0.0f64; window_len];
+    let mut out_left = vec![0.0f32; window_len];
+    let mut out_right = vec![0.0f32; window_len];
     let mut send_buf = if want_send {
-        Some((vec![0.0f64; window_len], vec![0.0f64; window_len]))
+        Some((vec![0.0f32; window_len], vec![0.0f32; window_len]))
     } else {
         None
     };
 
+    let env_shape = EnvShape::new(&sample.envelope, gate_sec);
+    let inv_out_rate = 1.0 / out_rate;
+    let has_dyn = !vol.is_empty() || !expr.is_empty();
+    let mut vol_cur = 1usize;
+    let mut expr_cur = 1usize;
+
     for i in 0..voice_frames {
         let idx = i as usize;
-        let t_sec = i as f64 / out_rate;
+        let t_sec = i as f64 * inv_out_rate;
         if t_sec >= cut_end_sec {
             break;
         }
@@ -609,7 +609,7 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
             continue;
         }
 
-        let env = envelope_level(&sample.envelope, t_sec, gate_sec);
+        let env = env_shape.level_at(t_sec);
         let (s_l, s_r) = if filter.enabled {
             let coeffs = if filter_modulated {
                 if i % filter_block == 0 {
@@ -645,19 +645,21 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
                 Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
                 _ => 1.0,
             };
-            let cc_gain = match track_dyn {
-                None => 1.0,
-                Some(td) => td[start + idx] as f64,
+            let cc_gain = if has_dyn {
+                let at = (start + idx) as f64 * inv_out_rate;
+                eval_automation(vol, at, &mut vol_cur) * eval_automation(expr, at, &mut expr_cur)
+            } else {
+                1.0
             };
             let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
             let amp = env * note_gain * dyn_gain * cut_gain;
             let out_l = s_l * amp * pan.0;
             let out_r = s_r * amp * pan.1;
-            out_left[idx] += out_l;
-            out_right[idx] += out_r;
+            out_left[idx] += out_l as f32;
+            out_right[idx] += out_r as f32;
             if let Some((sl, sr)) = send_buf.as_mut() {
-                sl[idx] += out_l * reverb_send;
-                sr[idx] += out_r * reverb_send;
+                sl[idx] += (out_l * reverb_send) as f32;
+                sr[idx] += (out_r * reverb_send) as f32;
             }
         }
     }
@@ -670,37 +672,142 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
     }
 }
 
-fn accumulate(global: &mut [f32], window: &[f64], start: usize) {
-    for (i, &v) in window.iter().enumerate() {
-        let slot = &mut global[start + i];
-        *slot = (*slot as f64 + v) as f32;
+#[inline]
+fn add_overlap(dst: &mut [f32], dst_base: usize, src: &[f32], src_start: usize) {
+    let lo = src_start.max(dst_base);
+    let hi = (src_start + src.len()).min(dst_base + dst.len());
+    if lo >= hi {
+        return;
+    }
+    let d = &mut dst[(lo - dst_base)..(hi - dst_base)];
+    let s = &src[(lo - src_start)..(hi - src_start)];
+    for (slot, &v) in d.iter_mut().zip(s.iter()) {
+        *slot = (*slot as f64 + v as f64) as f32;
+    }
+}
+
+fn accumulate_serial(
+    rendered: &[VoiceRender],
+    left: &mut [f32],
+    right: &mut [f32],
+    mut send: Option<(&mut [f32], &mut [f32])>,
+) {
+    for vr in rendered {
+        add_overlap(left, 0, &vr.left, vr.start);
+        add_overlap(right, 0, &vr.right, vr.start);
+        if let (Some((sl_w, sr_w)), Some((sl, sr))) = (&vr.send, send.as_mut()) {
+            add_overlap(sl, 0, sl_w, vr.start);
+            add_overlap(sr, 0, sr_w, vr.start);
+        }
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_jobs(jobs: &[RenderJob], ctx: RenderCtx) -> Vec<VoiceRender> {
+fn accumulate_batch(
+    rendered: &[VoiceRender],
+    left: &mut [f32],
+    right: &mut [f32],
+    send: Option<(&mut [f32], &mut [f32])>,
+) {
+    let n = left.len();
     let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(|p| p.get())
         .unwrap_or(1)
-        .min(jobs.len());
+        .min(rendered.len());
+    if workers <= 1 || n < 1 << 16 {
+        accumulate_serial(rendered, left, right, send);
+        return;
+    }
+    let chunk = n.div_ceil(workers);
+    match send {
+        None => std::thread::scope(|scope| {
+            for (w, (lc, rc)) in left
+                .chunks_mut(chunk)
+                .zip(right.chunks_mut(chunk))
+                .enumerate()
+            {
+                let base = w * chunk;
+                scope.spawn(move || {
+                    for vr in rendered {
+                        add_overlap(lc, base, &vr.left, vr.start);
+                        add_overlap(rc, base, &vr.right, vr.start);
+                    }
+                });
+            }
+        }),
+        Some((send_l, send_r)) => std::thread::scope(|scope| {
+            for (w, (((lc, rc), send_lc), send_rc)) in left
+                .chunks_mut(chunk)
+                .zip(right.chunks_mut(chunk))
+                .zip(send_l.chunks_mut(chunk))
+                .zip(send_r.chunks_mut(chunk))
+                .enumerate()
+            {
+                let base = w * chunk;
+                scope.spawn(move || {
+                    for vr in rendered {
+                        add_overlap(lc, base, &vr.left, vr.start);
+                        add_overlap(rc, base, &vr.right, vr.start);
+                        if let Some((sl_w, sr_w)) = &vr.send {
+                            add_overlap(send_lc, base, sl_w, vr.start);
+                            add_overlap(send_rc, base, sr_w, vr.start);
+                        }
+                    }
+                });
+            }
+        }),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn accumulate_batch(
+    rendered: &[VoiceRender],
+    left: &mut [f32],
+    right: &mut [f32],
+    send: Option<(&mut [f32], &mut [f32])>,
+) {
+    accumulate_serial(rendered, left, right, send);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_jobs(jobs: &[RenderJob], ctx: RenderCtx) -> Vec<VoiceRender> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let n = jobs.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(n);
     if workers <= 1 {
         return jobs.iter().map(|job| render_note(job, ctx)).collect();
     }
-    let chunk = jobs.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        jobs.chunks(chunk)
-            .map(|c| {
+    let cursor = AtomicUsize::new(0);
+    let cursor = &cursor;
+    let mut indexed: Vec<(usize, VoiceRender)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
                 scope.spawn(move || {
-                    c.iter()
-                        .map(|job| render_note(job, ctx))
-                        .collect::<Vec<_>>()
+                    let mut local: Vec<(usize, VoiceRender)> = Vec::new();
+                    loop {
+                        let i = cursor.fetch_add(1, Ordering::Relaxed);
+                        if i >= n {
+                            break;
+                        }
+                        local.push((i, render_note(&jobs[i], ctx)));
+                    }
+                    local
                 })
             })
-            .collect::<Vec<_>>()
+            .collect();
+        handles
             .into_iter()
             .flat_map(|handle| handle.join().expect("レンダーワーカーが panic しました"))
             .collect()
-    })
+    });
+    indexed.sort_by_key(|(i, _)| *i);
+    indexed.into_iter().map(|(_, v)| v).collect()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -910,8 +1017,8 @@ pub fn mix_project<'a>(
     bank: &'a dyn AudioBank,
     options: &MixOptions,
 ) -> MixResult {
-    let out_rate = project.sample_rate as f64;
     let quality = options.quality;
+    let out_rate = render_rate(project.sample_rate as f64, quality);
     let sample_by_id: HashMap<&str, &Sample> =
         project.samples.iter().map(|s| (s.id.as_str(), s)).collect();
     let tail_sec = options.tail_sec.unwrap_or(project.output.tail_sec);
@@ -956,17 +1063,13 @@ pub fn mix_project<'a>(
     let master_gain = project.master_gain;
     let total = frames as i64;
 
-    let track_dyns: Vec<Option<Vec<f32>>> = plans
-        .iter()
-        .map(|tp| build_track_dynamics(tp.track, frames, out_rate))
-        .collect();
-
     let mut jobs: Vec<RenderJob> = Vec::new();
     let mut batch_ends: Vec<usize> = Vec::new();
     let mut batch_bytes: usize = 0;
-    for (ti, tp) in plans.iter().enumerate() {
+    for tp in plans.iter() {
         let pan = pan_gains(tp.track.pan);
-        let track_dyn = track_dyns[ti].as_deref();
+        let vol = tp.track.dynamics.volume.as_slice();
+        let expr = tp.track.dynamics.expression.as_slice();
         let send_channels = if audible && tp.track.reverb_send > 0.0 {
             2
         } else {
@@ -974,7 +1077,7 @@ pub fn mix_project<'a>(
         };
         for voice in &tp.voices {
             let span = ((voice.end_sec - voice.note.start_sec).max(0.0) * out_rate) as usize;
-            let job_bytes = span.saturating_mul(8 * (2 + send_channels));
+            let job_bytes = span.saturating_mul(4 * (2 + send_channels));
             for &(sample, src) in &voice.sources {
                 if batch_bytes > 0 && batch_bytes + job_bytes > RENDER_BATCH_BYTES {
                     batch_ends.push(jobs.len());
@@ -985,7 +1088,8 @@ pub fn mix_project<'a>(
                     sample,
                     src,
                     track: tp.track,
-                    track_dyn,
+                    vol,
+                    expr,
                     pan,
                     cut_sec: voice.cut_sec,
                 });
@@ -1004,14 +1108,11 @@ pub fn mix_project<'a>(
     };
     let mut batch_start = 0;
     for &batch_end in &batch_ends {
-        for vr in render_jobs(&jobs[batch_start..batch_end], ctx) {
-            accumulate(&mut left, &vr.left, vr.start);
-            accumulate(&mut right, &vr.right, vr.start);
-            if let (Some((sl_w, sr_w)), Some((sl, sr))) = (&vr.send, send.as_mut()) {
-                accumulate(sl, sl_w, vr.start);
-                accumulate(sr, sr_w, vr.start);
-            }
-        }
+        let rendered = render_jobs(&jobs[batch_start..batch_end], ctx);
+        let send_slices = send
+            .as_mut()
+            .map(|(sl, sr)| (sl.as_mut_slice(), sr.as_mut_slice()));
+        accumulate_batch(&rendered, &mut left, &mut right, send_slices);
         batch_start = batch_end;
     }
 
@@ -1217,6 +1318,64 @@ mod tests {
             },
         );
         assert!(with_tail.frames > no_tail.frames);
+    }
+
+    #[test]
+    fn render_rate_caps_performance_only() {
+        assert_eq!(render_rate(48000.0, RenderQuality::Full), 48000.0);
+        assert_eq!(render_rate(48000.0, RenderQuality::Performance), 32000.0);
+        assert_eq!(render_rate(44100.0, RenderQuality::Performance), 32000.0);
+        assert_eq!(render_rate(22050.0, RenderQuality::Performance), 22050.0);
+    }
+
+    #[test]
+    fn performance_mode_renders_at_reduced_rate() {
+        let project = parse_project(json!({
+            "version": 1, "name": "t", "sampleRate": 48000, "masterGain": 1,
+            "samples": [sample_raw(json!({}))],
+            "tracks": [track_raw(json!({}))]
+        }))
+        .unwrap();
+        let src = PcmAudio {
+            sample_rate: 48000.0,
+            channels: vec![vec![1.0f32; 48000]],
+            frames: 48000,
+        };
+        let bank = bank1("s1", src);
+        let full = mix(&project, &bank, MixOptions::default());
+        let perf = mix(
+            &project,
+            &bank,
+            MixOptions {
+                quality: RenderQuality::Performance,
+                ..Default::default()
+            },
+        );
+        assert_eq!(full.sample_rate, 48000.0);
+        assert_eq!(perf.sample_rate, 32000.0);
+        assert!(perf.peak > 0.0);
+        assert!(perf.frames < full.frames);
+    }
+
+    #[test]
+    fn sparse_automation_long_song_stays_bounded() {
+        let project = parse_project(json!({
+            "version": 1, "name": "t", "sampleRate": 8000, "masterGain": 1,
+            "samples": [sample_raw(json!({}))],
+            "tracks": [track_raw(json!({
+                "notes": [
+                    { "pitch": 60, "startSec": 0.0, "durationSec": 0.2, "velocity": 100 },
+                    { "pitch": 60, "startSec": 120.0, "durationSec": 0.2, "velocity": 100 }
+                ],
+                "dynamics": { "volume": [{ "t": 0.0, "v": 0.5 }, { "t": 120.0, "v": 1.0 }], "expression": [] }
+            }))]
+        }))
+        .unwrap();
+        let bank = bank1("s1", const_source(1.0, 800));
+        let m = mix(&project, &bank, limiter_off());
+        assert!(m.duration_sec > 120.0);
+        assert!(all_finite(&m.left));
+        assert!(m.left[100] != 0.0);
     }
 
     #[test]
