@@ -42,11 +42,17 @@ impl GrainCloud {
         !self.grains.is_empty()
     }
 
-    pub fn process<F>(&mut self, spawn_pos: f64, read_advance: f64, mut read: F) -> (f64, f64)
+    pub fn process<F>(
+        &mut self,
+        spawn_pos: f64,
+        read_advance: f64,
+        spawn: bool,
+        mut read: F,
+    ) -> (f64, f64)
     where
         F: FnMut(f64) -> (f64, f64),
     {
-        if self.frames_to_next <= 0.0 {
+        if spawn && self.frames_to_next <= 0.0 {
             self.grains.push(Grain {
                 pos: spawn_pos,
                 age: 0.0,
@@ -93,7 +99,7 @@ mod tests {
         let mut last = 0.0;
         for i in 0..512 {
             let pos = i as f64;
-            let (l, _r) = cloud.process(pos, 1.0, |_p| (0.8, 0.8));
+            let (l, _r) = cloud.process(pos, 1.0, true, |_p| (0.8, 0.8));
             last = l;
         }
         assert!(close(last, 0.8, 0.02), "steady-state output was {last}");
@@ -104,7 +110,7 @@ mod tests {
         let mut cloud = GrainCloud::new(32.0, DEFAULT_OVERLAP);
         let mut out = (0.0, 0.0);
         for i in 0..256 {
-            out = cloud.process(i as f64, 1.0, |_p| (0.5, -0.3));
+            out = cloud.process(i as f64, 1.0, true, |_p| (0.5, -0.3));
         }
         assert!(close(out.0, 0.5, 0.03));
         assert!(close(out.1, -0.3, 0.03));
@@ -121,7 +127,7 @@ mod tests {
         let mut time = 0.0;
         let mut max_err: f64 = 0.0;
         for _ in 0..400 {
-            let (l, _r) = cloud.process(time, 1.0, read);
+            let (l, _r) = cloud.process(time, 1.0, true, read);
             let expected = time / 1024.0;
             if time > 80.0 {
                 max_err = max_err.max((l - expected).abs());
@@ -135,9 +141,27 @@ mod tests {
     fn grains_expire_after_their_lifetime() {
         let mut cloud = GrainCloud::new(16.0, DEFAULT_OVERLAP);
         for i in 0..200 {
-            cloud.process(i as f64, 1.0, |_p| (0.0, 0.0));
+            cloud.process(i as f64, 1.0, true, |_p| (0.0, 0.0));
         }
         assert!(cloud.grains.len() <= DEFAULT_OVERLAP as usize + 2);
         assert!(cloud.active());
+    }
+
+    #[test]
+    fn stops_spawning_when_disabled_and_drains() {
+        let mut cloud = GrainCloud::new(16.0, DEFAULT_OVERLAP);
+        for i in 0..64 {
+            cloud.process(i as f64, 1.0, true, |_p| (1.0, 1.0));
+        }
+        assert!(cloud.active());
+        let mut out = (1.0, 1.0);
+        for i in 0..64 {
+            out = cloud.process(64.0 + i as f64, 1.0, false, |_p| (1.0, 1.0));
+        }
+        assert!(
+            !cloud.active(),
+            "grains must drain once spawning is disabled"
+        );
+        assert_eq!(out, (0.0, 0.0));
     }
 }

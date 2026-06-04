@@ -312,6 +312,16 @@ fn sample_playback(note: &Note, sample: &Sample, drum_mode: bool) -> Playback {
     }
 }
 
+fn oneshot_out_sec(sample: &Sample, trim_len: i64, src_rate: f64, play: &Playback) -> f64 {
+    let base = (trim_len as f64 / src_rate / play.speed_ratio).max(0.0);
+    let glide_pad = if !play.granular && sample.pitch_mod.glide_semitones < 0.0 {
+        sample.pitch_mod.glide_ms / 1000.0
+    } else {
+        0.0
+    };
+    base + glide_pad
+}
+
 fn wrap_loop(pos: f64, region: Option<LoopRegion>) -> f64 {
     match region {
         Some(l) if pos >= l.end as f64 => {
@@ -369,7 +379,8 @@ fn render_note(
     let dir = if play.reverse { -1.0 } else { 1.0 };
 
     let (trim_start, trim_end) = resolve_trim(sample, src);
-    let loop_region = if play.reverse {
+    let one_shot = sample.one_shot;
+    let loop_region = if play.reverse || one_shot {
         None
     } else {
         resolve_loop(sample, src, (trim_start, trim_end))
@@ -377,9 +388,8 @@ fn render_note(
 
     let start_frame = (note.start_sec * out_rate).round() as i64;
     let release_sec = sample.envelope.release_ms / 1000.0;
-    let one_shot = sample.one_shot && loop_region.is_none();
     let gate_sec = if one_shot {
-        ((trim_end - trim_start) as f64 / src.sample_rate / play.speed_ratio).max(0.0)
+        oneshot_out_sec(sample, trim_end - trim_start, src.sample_rate, &play)
     } else {
         note.duration_sec
     };
@@ -458,19 +468,19 @@ fn render_note(
 
         let (raw_l, raw_r, alive) = if let Some(cloud) = cloud.as_mut() {
             time_pos = wrap_loop(time_pos, loop_region);
-            let spawn = time_pos;
+            let spawn_pos = time_pos;
             let read_adv = dir * pitch_increment;
-            let (l, r) = cloud.process(spawn, read_adv, |p| {
+            let within = if dir > 0.0 {
+                spawn_pos < trim_end as f64
+            } else {
+                spawn_pos >= trim_start as f64
+            };
+            let may_spawn = loop_region.is_some() || within;
+            let (l, r) = cloud.process(spawn_pos, read_adv, may_spawn, |p| {
                 read_lr(ch0, ch1, mono, frames, p, interp, loop_region)
             });
             time_pos += dir * time_increment;
-            let alive = loop_region.is_some()
-                || cloud.active()
-                || if dir > 0.0 {
-                    time_pos < trim_end as f64
-                } else {
-                    time_pos > trim_start as f64
-                };
+            let alive = loop_region.is_some() || cloud.active();
             (l, r, alive)
         } else {
             let mut pos = src_pos;
@@ -483,7 +493,7 @@ fn render_note(
                 if pos >= trim_end as f64 - 1.0 {
                     alive = false;
                 }
-            } else if pos <= trim_start as f64 {
+            } else if pos < trim_start as f64 {
                 alive = false;
             }
             let (l, r) = if alive {
@@ -564,16 +574,16 @@ fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, drum_mode
     let gate_plus_release = note.duration_sec + release;
     let play = sample_playback(note, sample, drum_mode);
     let (trim_start, trim_end) = resolve_trim(sample, src);
-    let looped = !play.reverse && resolve_loop(sample, src, (trim_start, trim_end)).is_some();
-    let one_shot_sec = (trim_end - trim_start) as f64 / src.sample_rate / play.speed_ratio;
-    if sample.one_shot && !looped {
-        return one_shot_sec + release;
+    if sample.one_shot {
+        return oneshot_out_sec(sample, trim_end - trim_start, src.sample_rate, &play) + release;
     }
+    let looped = !play.reverse && resolve_loop(sample, src, (trim_start, trim_end)).is_some();
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
     if looped || pitch_modulated {
         return gate_plus_release;
     }
+    let one_shot_sec = (trim_end - trim_start) as f64 / src.sample_rate / play.speed_ratio;
     gate_plus_release.min(one_shot_sec)
 }
 
@@ -2340,6 +2350,118 @@ mod tests {
         assert!(
             r.left[10].abs() > 0.8,
             "reverse starts at the ramp's high tail"
+        );
+    }
+
+    #[test]
+    fn granular_stops_at_sample_end_even_in_a_longer_buffer() {
+        let project = make_project(
+            json!([
+                sample_raw(
+                    json!({ "id": "g", "pitchMode": "granular", "speed": 1.0, "envelope": { "attackMs": 0, "releaseMs": 0 } })
+                ),
+                sample_raw(json!({ "id": "long", "envelope": { "attackMs": 0, "releaseMs": 0 } }))
+            ]),
+            json!([
+                track_raw(json!({
+                    "id": "t1", "defaultSampleId": "g", "pan": -1,
+                    "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 1.0, "velocity": 127 }]
+                })),
+                track_raw(json!({
+                    "id": "t2", "defaultSampleId": "long", "pan": 1,
+                    "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 1.0, "velocity": 127 }]
+                }))
+            ]),
+        );
+        let mut bank = HashMap::new();
+        bank.insert("g".to_string(), const_source(1.0, 200));
+        bank.insert("long".to_string(), const_source(1.0, 1000));
+        let m = mix(&project, &bank, limiter_off());
+        assert!(
+            m.left[100].abs() > 0.5,
+            "granular voice should sound while within its material"
+        );
+        assert!(
+            m.left[600].abs() < 0.05,
+            "granular voice must not freeze on its edge frame past the sample end"
+        );
+    }
+
+    #[test]
+    fn one_shot_overrides_loop() {
+        let note = json!([{ "pitch": 60, "startSec": 0, "durationSec": 0.05, "velocity": 127 }]);
+        let make = |loop_on: bool| {
+            make_project(
+                json!([sample_raw(json!({
+                    "envelope": { "attackMs": 0, "releaseMs": 0 },
+                    "oneShot": true,
+                    "loop": { "enabled": loop_on, "startSec": 0.0, "endSec": 0.2 }
+                }))]),
+                json!([track_raw(json!({ "notes": note.clone() }))]),
+            )
+        };
+        let no_loop = mix(
+            &make(false),
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        let with_loop = mix(
+            &make(true),
+            &bank1("s1", mono_ramp_source(1000)),
+            limiter_off(),
+        );
+        assert!(
+            close(with_loop.left[900] as f64, no_loop.left[900] as f64, 3),
+            "one-shot must play through once regardless of a loop marker"
+        );
+        assert!(
+            with_loop.left[900].abs() > 0.8,
+            "one-shot should reach the tail of the ramp"
+        );
+    }
+
+    #[test]
+    fn one_shot_resample_glide_plays_full_sample() {
+        let project = make_project(
+            json!([sample_raw(json!({
+                "envelope": { "attackMs": 0, "releaseMs": 0 },
+                "oneShot": true,
+                "pitchMod": { "glideSemitones": -12, "glideMs": 400 }
+            }))]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.05, "velocity": 127 }] })
+            )]),
+        );
+        let m = mix(&project, &bank1("s1", mono_ramp_source(500)), limiter_off());
+        assert!(
+            m.left[560].abs() > 0.0,
+            "downward glide slows the read head, so the one-shot must extend past its base length"
+        );
+    }
+
+    #[test]
+    fn reverse_emits_the_first_trimmed_frame() {
+        let project = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 }, "reverse": true, "oneShot": true })
+            )]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }] })
+            )]),
+        );
+        let src = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![vec![0.3, 0.7]],
+            frames: 2,
+        };
+        let m = mix(&project, &bank1("s1", src), limiter_off());
+        assert!(
+            close(m.left[0] as f64, 0.7, 3),
+            "reverse starts at the tail frame"
+        );
+        assert!(
+            m.left[1].abs() > 0.2,
+            "reverse must still emit the head (first trimmed) frame"
         );
     }
 }
