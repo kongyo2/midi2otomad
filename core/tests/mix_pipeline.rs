@@ -169,6 +169,7 @@ fn limiter_option_overrides_project_setting() {
         &MixOptions {
             tail_sec: None,
             limiter: Some(false),
+            ..Default::default()
         },
     );
     let lim_max = limited.left.iter().fold(0.0f32, |p, &v| p.max(v.abs()));

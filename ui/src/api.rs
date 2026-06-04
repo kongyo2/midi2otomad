@@ -98,6 +98,7 @@ struct OpenMidiArg<'a> {
 #[serde(rename_all = "camelCase")]
 struct ProjectArg<'a> {
     project: &'a Project,
+    performance: bool,
 }
 
 #[derive(Serialize)]
@@ -121,6 +122,7 @@ struct SecArg {
 struct PreviewArg<'a> {
     sample: &'a Sample,
     pitch: Option<i32>,
+    performance: bool,
 }
 
 #[derive(Serialize)]
@@ -191,12 +193,31 @@ pub async fn detect_pitch(sample: &Sample) -> Result<Option<PitchEstimate>, Stri
     invoke("detect_pitch", to_args(&DetectArg { sample })).await
 }
 
-pub async fn preview_sample(sample: &Sample, pitch: Option<i32>) -> Result<(), String> {
-    invoke_void("preview_sample", to_args(&PreviewArg { sample, pitch })).await
+pub async fn preview_sample(
+    sample: &Sample,
+    pitch: Option<i32>,
+    performance: bool,
+) -> Result<(), String> {
+    invoke_void(
+        "preview_sample",
+        to_args(&PreviewArg {
+            sample,
+            pitch,
+            performance,
+        }),
+    )
+    .await
 }
 
-pub async fn set_mix(project: &Project) -> Result<MixSummary, String> {
-    invoke("set_mix", to_args(&ProjectArg { project })).await
+pub async fn set_mix(project: &Project, performance: bool) -> Result<MixSummary, String> {
+    invoke(
+        "set_mix",
+        to_args(&ProjectArg {
+            project,
+            performance,
+        }),
+    )
+    .await
 }
 
 pub async fn play(from_sec: Option<f64>) -> Result<(), String> {

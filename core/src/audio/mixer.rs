@@ -78,13 +78,23 @@ pub struct MixResult {
     pub peak: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderQuality {
+    #[default]
+    Full,
+    Performance,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MixOptions {
     pub tail_sec: Option<f64>,
     pub limiter: Option<bool>,
+    pub quality: RenderQuality,
 }
 
 const MIN_FRAMES: usize = 1;
+
+const RENDER_BATCH: usize = 256;
 
 const CHOKE_RELEASE_MS: f64 = 5.0;
 
@@ -313,6 +323,7 @@ fn oneshot_out_sec(
     src: &PcmAudio,
     out_rate: f64,
     play: &Playback,
+    quality: RenderQuality,
 ) -> f64 {
     let trim_len = (trim_end - trim_start) as f64;
     if trim_len <= 0.0 || out_rate <= 0.0 || src.sample_rate <= 0.0 {
@@ -322,7 +333,11 @@ fn oneshot_out_sec(
     let base_increment = (src.sample_rate / out_rate) * play.pitch_ratio;
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
-    if play.granular || !pitch_modulated || base_increment <= 0.0 {
+    if quality == RenderQuality::Performance
+        || play.granular
+        || !pitch_modulated
+        || base_increment <= 0.0
+    {
         return closed_form;
     }
     let max_frames = (out_rate * 600.0) as i64;
@@ -372,22 +387,61 @@ fn read_lr(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_note(
-    note: &Note,
-    sample: &Sample,
-    src: &PcmAudio,
-    track: &Track,
-    track_dyn: Option<&[f32]>,
-    left: &mut [f32],
-    right: &mut [f32],
-    mut send: Option<(&mut [f32], &mut [f32])>,
+#[derive(Clone, Copy)]
+struct RenderCtx {
     out_rate: f64,
     master_gain: f64,
+    total: i64,
+    audible: bool,
+    quality: RenderQuality,
+}
+
+struct RenderJob<'a> {
+    note: &'a Note,
+    sample: &'a Sample,
+    src: &'a PcmAudio,
+    track: &'a Track,
+    track_dyn: Option<&'a [f32]>,
     pan: (f64, f64),
     cut_sec: Option<f64>,
-) {
-    let total = left.len() as i64;
+}
+
+struct VoiceRender {
+    start: usize,
+    left: Vec<f64>,
+    right: Vec<f64>,
+    send: Option<(Vec<f64>, Vec<f64>)>,
+}
+
+impl VoiceRender {
+    fn empty(start: usize) -> Self {
+        Self {
+            start,
+            left: Vec::new(),
+            right: Vec::new(),
+            send: None,
+        }
+    }
+}
+
+fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
+    let RenderJob {
+        note,
+        sample,
+        src,
+        track,
+        track_dyn,
+        pan,
+        cut_sec,
+    } = *job;
+    let RenderCtx {
+        out_rate,
+        master_gain,
+        total,
+        audible,
+        quality,
+    } = ctx;
+    let performance = quality == RenderQuality::Performance;
     let play = sample_playback(note, sample, track.drum_mode);
     let src_rate_ratio = src.sample_rate / out_rate;
     let base_pitch_increment = src_rate_ratio * play.pitch_ratio;
@@ -405,13 +459,19 @@ fn render_note(
     let start_frame = (note.start_sec * out_rate).round() as i64;
     let release_sec = sample.envelope.release_ms / 1000.0;
     let gate_sec = if one_shot {
-        oneshot_out_sec(sample, trim_start, trim_end, src, out_rate, &play)
+        oneshot_out_sec(sample, trim_start, trim_end, src, out_rate, &play, quality)
     } else {
         note.duration_sec
     };
     let gate_frames = ((gate_sec * out_rate).round() as i64).max(1);
     let release_frames = ((release_sec * out_rate).round() as i64).max(0);
     let voice_frames = gate_frames + release_frames;
+
+    let start = start_frame.max(0) as usize;
+    let window_len = voice_frames.min((total - start_frame).max(0)).max(0) as usize;
+    if window_len == 0 {
+        return VoiceRender::empty(start);
+    }
 
     let choke_sec = CHOKE_RELEASE_MS / 1000.0;
     let cut_end_sec = match cut_sec {
@@ -422,17 +482,22 @@ fn render_note(
     let depth = track.dynamics_depth.clamp(0.0, 1.0);
     let vel_gain = velocity_to_gain(note.velocity as f64);
     let note_gain = sample.gain * track.gain * master_gain;
-    let interp = sample.interpolation;
+    let interp = if performance {
+        InterpolationMode::Linear
+    } else {
+        sample.interpolation
+    };
 
     let ch0 = match src.channels.first() {
         Some(c) => c.as_slice(),
-        None => return,
+        None => return VoiceRender::empty(start),
     };
     let ch1 = src.channels.get(1).map(|c| c.as_slice()).unwrap_or(ch0);
     let mono = src.channels.len() < 2;
 
     let filter = &sample.filter;
     let filter_modulated = filter.enabled && (filter.env_amount != 0.0 || filter.lfo_depth != 0.0);
+    let filter_block: i64 = if performance { 32 } else { 1 };
     let nyquist = out_rate * 0.49;
     let static_coeffs: Option<BiquadCoeffs> = if filter.enabled && !filter_modulated {
         Some(design_biquad(
@@ -445,9 +510,11 @@ fn render_note(
     } else {
         None
     };
+    let mut modulated_coeffs: Option<BiquadCoeffs> = None;
     let mut state_l = create_biquad_state();
     let mut state_r = create_biquad_state();
     let reverb_send = track.reverb_send;
+    let want_send = audible && reverb_send > 0.0;
 
     let pitch_modulated =
         sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
@@ -459,17 +526,23 @@ fn render_note(
     };
     let mut src_pos = start_pos;
     let mut time_pos = start_pos;
+    let overlap = if performance { 2.0 } else { DEFAULT_OVERLAP };
     let mut cloud = if play.granular {
-        Some(GrainCloud::new(
-            play.grain_ms / 1000.0 * out_rate,
-            DEFAULT_OVERLAP,
-        ))
+        Some(GrainCloud::new(play.grain_ms / 1000.0 * out_rate, overlap))
+    } else {
+        None
+    };
+
+    let mut out_left = vec![0.0f64; window_len];
+    let mut out_right = vec![0.0f64; window_len];
+    let mut send_buf = if want_send {
+        Some((vec![0.0f64; window_len], vec![0.0f64; window_len]))
     } else {
         None
     };
 
     for i in 0..voice_frames {
-        let out_idx = start_frame + i;
+        let idx = i as usize;
         let t_sec = i as f64 / out_rate;
         if t_sec >= cut_end_sec {
             break;
@@ -529,13 +602,9 @@ fn render_note(
             (l, r, alive)
         };
 
-        if out_idx < 0 {
-            continue;
-        }
-        if out_idx >= total {
+        if idx >= window_len {
             break;
         }
-        let out_idx = out_idx as usize;
         if !alive {
             continue;
         }
@@ -543,13 +612,16 @@ fn render_note(
         let env = envelope_level(&sample.envelope, t_sec, gate_sec);
         let (s_l, s_r) = if filter.enabled {
             let coeffs = if filter_modulated {
-                Some(design_biquad(
-                    filter.kind,
-                    modulated_cutoff(filter, env, t_sec, nyquist),
-                    out_rate,
-                    filter.q,
-                    filter.gain_db,
-                ))
+                if i % filter_block == 0 {
+                    modulated_coeffs = Some(design_biquad(
+                        filter.kind,
+                        modulated_cutoff(filter, env, t_sec, nyquist),
+                        out_rate,
+                        filter.q,
+                        filter.gain_db,
+                    ));
+                }
+                modulated_coeffs
             } else {
                 static_coeffs
             };
@@ -575,22 +647,65 @@ fn render_note(
             };
             let cc_gain = match track_dyn {
                 None => 1.0,
-                Some(td) => td[out_idx] as f64,
+                Some(td) => td[start + idx] as f64,
             };
             let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
             let amp = env * note_gain * dyn_gain * cut_gain;
             let out_l = s_l * amp * pan.0;
             let out_r = s_r * amp * pan.1;
-            left[out_idx] = (left[out_idx] as f64 + out_l) as f32;
-            right[out_idx] = (right[out_idx] as f64 + out_r) as f32;
-            if reverb_send > 0.0 {
-                if let Some((sl, sr)) = send.as_mut() {
-                    sl[out_idx] = (sl[out_idx] as f64 + out_l * reverb_send) as f32;
-                    sr[out_idx] = (sr[out_idx] as f64 + out_r * reverb_send) as f32;
-                }
+            out_left[idx] += out_l;
+            out_right[idx] += out_r;
+            if let Some((sl, sr)) = send_buf.as_mut() {
+                sl[idx] += out_l * reverb_send;
+                sr[idx] += out_r * reverb_send;
             }
         }
     }
+
+    VoiceRender {
+        start,
+        left: out_left,
+        right: out_right,
+        send: send_buf,
+    }
+}
+
+fn accumulate(global: &mut [f32], window: &[f64], start: usize) {
+    for (i, &v) in window.iter().enumerate() {
+        let slot = &mut global[start + i];
+        *slot = (*slot as f64 + v) as f32;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_jobs(jobs: &[RenderJob], ctx: RenderCtx) -> Vec<VoiceRender> {
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(jobs.len());
+    if workers <= 1 {
+        return jobs.iter().map(|job| render_note(job, ctx)).collect();
+    }
+    let chunk = jobs.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        jobs.chunks(chunk)
+            .map(|c| {
+                scope.spawn(move || {
+                    c.iter()
+                        .map(|job| render_note(job, ctx))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("レンダーワーカーが panic しました"))
+            .collect()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn render_jobs(jobs: &[RenderJob], ctx: RenderCtx) -> Vec<VoiceRender> {
+    jobs.iter().map(|job| render_note(job, ctx)).collect()
 }
 
 fn sounding_duration_sec(
@@ -599,13 +714,15 @@ fn sounding_duration_sec(
     src: &PcmAudio,
     out_rate: f64,
     drum_mode: bool,
+    quality: RenderQuality,
 ) -> f64 {
     let release = sample.envelope.release_ms / 1000.0;
     let gate_plus_release = note.duration_sec + release;
     let play = sample_playback(note, sample, drum_mode);
     let (trim_start, trim_end) = resolve_trim(sample, src);
     if sample.one_shot {
-        return oneshot_out_sec(sample, trim_start, trim_end, src, out_rate, &play) + release;
+        return oneshot_out_sec(sample, trim_start, trim_end, src, out_rate, &play, quality)
+            + release;
     }
     let looped = !play.reverse && resolve_loop(sample, src, (trim_start, trim_end)).is_some();
     let pitch_modulated =
@@ -686,6 +803,7 @@ fn plan_track_voices<'a>(
     sample_by_id: &HashMap<&str, &'a Sample>,
     bank: &'a dyn AudioBank,
     out_rate: f64,
+    quality: RenderQuality,
 ) -> Vec<PlannedVoice<'a>> {
     let resolved: Vec<(&Note, Vec<(&'a Sample, &'a PcmAudio)>)> = track
         .notes
@@ -703,7 +821,7 @@ fn plan_track_voices<'a>(
             duration_sec: sources
                 .iter()
                 .map(|(sample, src)| {
-                    sounding_duration_sec(note, sample, src, out_rate, track.drum_mode)
+                    sounding_duration_sec(note, sample, src, out_rate, track.drum_mode, quality)
                 })
                 .fold(0.0, f64::max),
             sample_id: sources[0].0.id.clone(),
@@ -793,6 +911,7 @@ pub fn mix_project<'a>(
     options: &MixOptions,
 ) -> MixResult {
     let out_rate = project.sample_rate as f64;
+    let quality = options.quality;
     let sample_by_id: HashMap<&str, &Sample> =
         project.samples.iter().map(|s| (s.id.as_str(), s)).collect();
     let tail_sec = options.tail_sec.unwrap_or(project.output.tail_sec);
@@ -803,7 +922,7 @@ pub fn mix_project<'a>(
         .filter(|t| track_renders(t, solo))
         .map(|t| TrackPlan {
             track: t,
-            voices: plan_track_voices(t, &sample_by_id, bank, out_rate),
+            voices: plan_track_voices(t, &sample_by_id, bank, out_rate, quality),
         })
         .collect();
 
@@ -835,29 +954,46 @@ pub fn mix_project<'a>(
     };
 
     let master_gain = project.master_gain;
+    let total = frames as i64;
 
-    for tp in &plans {
+    let track_dyns: Vec<Option<Vec<f32>>> = plans
+        .iter()
+        .map(|tp| build_track_dynamics(tp.track, frames, out_rate))
+        .collect();
+
+    let mut jobs: Vec<RenderJob> = Vec::new();
+    for (ti, tp) in plans.iter().enumerate() {
         let pan = pan_gains(tp.track.pan);
-        let track_dyn = build_track_dynamics(tp.track, frames, out_rate);
+        let track_dyn = track_dyns[ti].as_deref();
         for voice in &tp.voices {
             for &(sample, src) in &voice.sources {
-                let send_ref = send
-                    .as_mut()
-                    .map(|(l, r)| (l.as_mut_slice(), r.as_mut_slice()));
-                render_note(
-                    voice.note,
+                jobs.push(RenderJob {
+                    note: voice.note,
                     sample,
                     src,
-                    tp.track,
-                    track_dyn.as_deref(),
-                    &mut left,
-                    &mut right,
-                    send_ref,
-                    out_rate,
-                    master_gain,
+                    track: tp.track,
+                    track_dyn,
                     pan,
-                    voice.cut_sec,
-                );
+                    cut_sec: voice.cut_sec,
+                });
+            }
+        }
+    }
+
+    let ctx = RenderCtx {
+        out_rate,
+        master_gain,
+        total,
+        audible,
+        quality,
+    };
+    for batch in jobs.chunks(RENDER_BATCH) {
+        for vr in render_jobs(batch, ctx) {
+            accumulate(&mut left, &vr.left, vr.start);
+            accumulate(&mut right, &vr.right, vr.start);
+            if let (Some((sl_w, sr_w)), Some((sl, sr))) = (&vr.send, send.as_mut()) {
+                accumulate(sl, sl_w, vr.start);
+                accumulate(sr, sr_w, vr.start);
             }
         }
     }
@@ -981,6 +1117,7 @@ mod tests {
         MixOptions {
             tail_sec: None,
             limiter: Some(false),
+            ..Default::default()
         }
     }
 
@@ -1050,6 +1187,7 @@ mod tests {
             MixOptions {
                 tail_sec: Some(1.0),
                 limiter: None,
+                ..Default::default()
             },
         );
         let no_tail = mix(
@@ -1058,6 +1196,7 @@ mod tests {
             MixOptions {
                 tail_sec: Some(0.0),
                 limiter: None,
+                ..Default::default()
             },
         );
         assert!(with_tail.frames > no_tail.frames);
@@ -1323,6 +1462,7 @@ mod tests {
             MixOptions {
                 tail_sec: None,
                 limiter: Some(true),
+                ..Default::default()
             },
         );
         assert!((forced_on.left[100] as f64) < 1.0);
@@ -1349,6 +1489,7 @@ mod tests {
             MixOptions {
                 tail_sec: Some(0.0),
                 limiter: None,
+                ..Default::default()
             },
         );
         assert!(overridden.frames < project_tail.frames);
@@ -2149,6 +2290,7 @@ mod tests {
             MixOptions {
                 tail_sec: None,
                 limiter: Some(true),
+                ..Default::default()
             },
         );
         assert!(m.peak > 2.9);
@@ -2224,6 +2366,7 @@ mod tests {
             MixOptions {
                 tail_sec: Some(-0.4),
                 limiter: Some(false),
+                ..Default::default()
             },
         );
         assert_eq!(m.frames, 101);
@@ -2235,6 +2378,7 @@ mod tests {
             MixOptions {
                 tail_sec: Some(-10.0),
                 limiter: Some(false),
+                ..Default::default()
             },
         );
         assert!(m.frames >= 1);
@@ -2537,6 +2681,7 @@ mod tests {
             MixOptions {
                 tail_sec: Some(0.0),
                 limiter: Some(false),
+                ..Default::default()
             },
         );
         assert!(m.left[100].abs() > 0.5, "one-shot plays its short sample");
@@ -2604,6 +2749,67 @@ mod tests {
         assert!(
             peak < 0.3,
             "trimmed-off head (0.9) must not leak via interpolation taps (peak {peak})"
+        );
+    }
+
+    fn perf_opts() -> MixOptions {
+        MixOptions {
+            tail_sec: None,
+            limiter: Some(false),
+            quality: RenderQuality::Performance,
+        }
+    }
+
+    #[test]
+    fn default_quality_is_full() {
+        assert_eq!(RenderQuality::default(), RenderQuality::Full);
+        assert_eq!(MixOptions::default().quality, RenderQuality::Full);
+    }
+
+    #[test]
+    fn performance_mode_renders_audible_finite_audio() {
+        let project = make_project(
+            json!([sample_raw(json!({ "interpolation": "sinc" }))]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 67, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+            }))]),
+        );
+        let b = bank1("s1", nyquist_source(1000));
+        let full = mix(&project, &b, limiter_off());
+        let fast = mix(&project, &b, perf_opts());
+        assert!(all_finite(&fast.left) && all_finite(&fast.right));
+        assert!(
+            max_abs(&fast.left) > 0.0,
+            "performance mode must still produce audio"
+        );
+        let differs = full
+            .left
+            .iter()
+            .zip(fast.left.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(
+            differs,
+            "forcing linear interpolation should change a pitch-shifted sinc render"
+        );
+    }
+
+    #[test]
+    fn performance_mode_one_shot_with_pitch_mod_stays_audible() {
+        let project = make_project(
+            json!([sample_raw(json!({
+                "oneShot": true,
+                "pitchMod": { "glideSemitones": 12, "glideMs": 200 }
+            }))]),
+            json!([track_raw(json!({
+                "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }]
+            }))]),
+        );
+        let b = bank1("s1", const_source(1.0, 1000));
+        let fast = mix(&project, &b, perf_opts());
+        assert!(all_finite(&fast.left));
+        assert!(
+            max_abs(&fast.left) > 0.0,
+            "one-shot with glide must still sound in performance mode"
         );
     }
 }

@@ -20,6 +20,7 @@ pub struct Studio {
     pub mixed_seq: RwSignal<u64>,
     pub drag_active: RwSignal<bool>,
     pub import_mode: RwSignal<String>,
+    pub performance_mode: RwSignal<bool>,
 }
 
 fn sample_from_dto(dto: &SampleDto) -> Sample {
@@ -53,7 +54,13 @@ impl Studio {
             mixed_seq: RwSignal::new(0),
             drag_active: RwSignal::new(false),
             import_mode: RwSignal::new("auto".to_string()),
+            performance_mode: RwSignal::new(false),
         }
+    }
+
+    pub fn set_performance_mode(&self, on: bool) {
+        self.performance_mode.set(on);
+        self.mark_dirty();
     }
 
     pub fn show_toast(&self, message: impl Into<String>) {
@@ -246,7 +253,7 @@ impl Studio {
             let seq = this.edit_seq.get_untracked();
             if this.mixed_seq.get_untracked() != seq {
                 let project = this.snapshot();
-                let _ = api::set_mix(&project).await;
+                let _ = api::set_mix(&project, this.performance_mode.get_untracked()).await;
                 this.mixed_seq.set(seq);
             }
             after.await;
@@ -288,7 +295,8 @@ impl Studio {
     pub fn preview_sample(&self, sample: Sample) {
         let this = *self;
         spawn_local(async move {
-            let _ = api::preview_sample(&sample, None).await;
+            let performance = this.performance_mode.get_untracked();
+            let _ = api::preview_sample(&sample, None, performance).await;
             this.mark_dirty();
         });
     }
