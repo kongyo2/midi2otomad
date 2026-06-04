@@ -171,25 +171,19 @@ fn finite(v: f32) -> f64 {
     }
 }
 
-fn sample_at(channel: &[f32], frames: usize, index: i64, region: Option<LoopRegion>) -> f64 {
+fn sample_at(channel: &[f32], lo: i64, hi: i64, index: i64, region: Option<LoopRegion>) -> f64 {
     let idx = match region {
         Some(r) => (r.start + (((index - r.start) % r.length) + r.length) % r.length) as usize,
-        None => {
-            if index < 0 {
-                0
-            } else if index as usize >= frames {
-                frames - 1
-            } else {
-                index as usize
-            }
-        }
+        None => index.clamp(lo, (hi - 1).max(lo)) as usize,
     };
     finite(channel[idx.min(channel.len().saturating_sub(1))])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_sample(
     channel: &[f32],
-    frames: usize,
+    lo: i64,
+    hi: i64,
     pos: f64,
     interp: InterpolationMode,
     region: Option<LoopRegion>,
@@ -198,17 +192,17 @@ fn read_sample(
     let frac = pos - i0 as f64;
     match interp {
         InterpolationMode::Linear => {
-            let a = sample_at(channel, frames, i0, region);
-            let b = sample_at(channel, frames, i0 + 1, region);
+            let a = sample_at(channel, lo, hi, i0, region);
+            let b = sample_at(channel, lo, hi, i0 + 1, region);
             a + (b - a) * frac
         }
         InterpolationMode::Sinc => super::interpolation::windowed_sinc(i0, frac, |idx| {
-            sample_at(channel, frames, idx, region)
+            sample_at(channel, lo, hi, idx, region)
         }),
         InterpolationMode::Hermite => {
             if region.is_none() {
-                let m = frames.min(channel.len());
-                if i0 >= 1 && (i0 as usize) + 2 < m {
+                let hi_c = hi.min(channel.len() as i64);
+                if i0 > lo && i0 + 2 < hi_c {
                     let i = i0 as usize;
                     return super::interpolation::cubic_hermite(
                         finite(channel[i - 1]),
@@ -219,10 +213,10 @@ fn read_sample(
                     );
                 }
             }
-            let y0 = sample_at(channel, frames, i0 - 1, region);
-            let y1 = sample_at(channel, frames, i0, region);
-            let y2 = sample_at(channel, frames, i0 + 1, region);
-            let y3 = sample_at(channel, frames, i0 + 2, region);
+            let y0 = sample_at(channel, lo, hi, i0 - 1, region);
+            let y1 = sample_at(channel, lo, hi, i0, region);
+            let y2 = sample_at(channel, lo, hi, i0 + 1, region);
+            let y3 = sample_at(channel, lo, hi, i0 + 2, region);
             super::interpolation::cubic_hermite(y0, y1, y2, y3, frac)
         }
     }
@@ -357,7 +351,8 @@ fn read_lr(
     ch0: &[f32],
     ch1: &[f32],
     mono: bool,
-    frames: usize,
+    lo: i64,
+    hi: i64,
     pos: f64,
     interp: InterpolationMode,
     loop_region: Option<LoopRegion>,
@@ -367,12 +362,12 @@ fn read_lr(
         _ => None,
     };
     if mono {
-        let s = read_sample(ch0, frames, pos, interp, region);
+        let s = read_sample(ch0, lo, hi, pos, interp, region);
         (s, s)
     } else {
         (
-            read_sample(ch0, frames, pos, interp, region),
-            read_sample(ch1, frames, pos, interp, region),
+            read_sample(ch0, lo, hi, pos, interp, region),
+            read_sample(ch1, lo, hi, pos, interp, region),
         )
     }
 }
@@ -428,7 +423,6 @@ fn render_note(
     let vel_gain = velocity_to_gain(note.velocity as f64);
     let note_gain = sample.gain * track.gain * master_gain;
     let interp = sample.interpolation;
-    let frames = src.frames;
 
     let ch0 = match src.channels.first() {
         Some(c) => c.as_slice(),
@@ -497,15 +491,8 @@ fn render_note(
                 spawn_pos >= trim_start as f64
             };
             let may_spawn = loop_region.is_some() || within;
-            let trim_lo = trim_start as f64;
-            let trim_hi = (trim_end - 1).max(trim_start) as f64;
             let (l, r) = cloud.process(spawn_pos, read_adv, may_spawn, |p| {
-                let cp = if loop_region.is_some() {
-                    p
-                } else {
-                    p.clamp(trim_lo, trim_hi)
-                };
-                read_lr(ch0, ch1, mono, frames, cp, interp, loop_region)
+                read_lr(ch0, ch1, mono, trim_start, trim_end, p, interp, loop_region)
             });
             time_pos += dir * time_increment;
             let alive = loop_region.is_some() || cloud.active();
@@ -525,7 +512,16 @@ fn render_note(
                 alive = false;
             }
             let (l, r) = if alive {
-                read_lr(ch0, ch1, mono, frames, pos, interp, loop_region)
+                read_lr(
+                    ch0,
+                    ch1,
+                    mono,
+                    trim_start,
+                    trim_end,
+                    pos,
+                    interp,
+                    loop_region,
+                )
             } else {
                 (0.0, 0.0)
             };
@@ -2578,6 +2574,36 @@ mod tests {
         assert!(
             peak < 0.3,
             "trimmed-off head (0.9) must not leak into reversed granular output (peak {peak})"
+        );
+    }
+
+    #[test]
+    fn reverse_resample_sinc_does_not_leak_pre_trim_audio() {
+        let mut channel = vec![0.9f32; 200];
+        for v in channel[100..200].iter_mut() {
+            *v = 0.1;
+        }
+        let src = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![channel],
+            frames: 200,
+        };
+        let project = make_project(
+            json!([sample_raw(json!({
+                "envelope": { "attackMs": 0, "releaseMs": 0 },
+                "interpolation": "sinc", "reverse": true, "oneShot": true,
+                "trim": { "enabled": true, "startSec": 0.1, "endSec": 0.2 }
+            }))]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }] })
+            )]),
+        );
+        let m = mix(&project, &bank1("s1", src), limiter_off());
+        let peak = m.left.iter().fold(0.0f32, |p, &v| p.max(v.abs()));
+        assert!(peak > 0.0, "reversed sample should produce audio");
+        assert!(
+            peak < 0.3,
+            "trimmed-off head (0.9) must not leak via interpolation taps (peak {peak})"
         );
     }
 }
