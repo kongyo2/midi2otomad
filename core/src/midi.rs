@@ -133,6 +133,12 @@ struct TrackSpec {
     expression: Vec<(u64, f64)>,
 }
 
+struct PreservedTrack {
+    reverb_send: f64,
+    polyphony: Polyphony,
+    dynamics_depth: f64,
+}
+
 pub fn midi_to_project(
     bytes: &[u8],
     file_name: &str,
@@ -237,15 +243,18 @@ pub fn midi_to_project_with_mode(
 
     let previous_samples: Vec<Sample> = previous.map(|p| p.samples.clone()).unwrap_or_default();
     let fallback_sample_id = previous_samples.first().map(|s| s.id.clone());
-    let mut previous_sends: HashMap<usize, f64> = HashMap::new();
-    let mut previous_polyphony: HashMap<usize, Polyphony> = HashMap::new();
-    let mut previous_dynamics_depth: HashMap<usize, f64> = HashMap::new();
+    let mut previous_tracks: HashMap<(usize, bool), PreservedTrack> = HashMap::new();
     if let Some(prev) = previous {
         for track in &prev.tracks {
             if let Some(idx) = track.midi_index {
-                previous_sends.insert(idx as usize, track.reverb_send);
-                previous_polyphony.insert(idx as usize, track.polyphony.clone());
-                previous_dynamics_depth.insert(idx as usize, track.dynamics_depth);
+                previous_tracks.insert(
+                    (idx as usize, track.drum_mode),
+                    PreservedTrack {
+                        reverb_send: track.reverb_send,
+                        polyphony: track.polyphony.clone(),
+                        dynamics_depth: track.dynamics_depth,
+                    },
+                );
             }
         }
     }
@@ -338,6 +347,7 @@ pub fn midi_to_project_with_mode(
             } else {
                 spec.name.clone()
             };
+            let preserved = previous_tracks.get(&(spec.midi_index, spec.drum_mode));
             Track {
                 id: crate::id::make_id("track"),
                 name,
@@ -355,15 +365,9 @@ pub fn midi_to_project_with_mode(
                     volume: to_points(&spec.volume),
                     expression: to_points(&spec.expression),
                 },
-                dynamics_depth: previous_dynamics_depth
-                    .get(&spec.midi_index)
-                    .copied()
-                    .unwrap_or(1.0),
-                reverb_send: previous_sends.get(&spec.midi_index).copied().unwrap_or(0.0),
-                polyphony: previous_polyphony
-                    .get(&spec.midi_index)
-                    .cloned()
-                    .unwrap_or_default(),
+                dynamics_depth: preserved.map(|p| p.dynamics_depth).unwrap_or(1.0),
+                reverb_send: preserved.map(|p| p.reverb_send).unwrap_or(0.0),
+                polyphony: preserved.map(|p| p.polyphony.clone()).unwrap_or_default(),
             }
         })
         .collect();
@@ -740,6 +744,30 @@ mod tests {
             crate::schema::VoicePriority::Oldest
         );
         assert_eq!(track.polyphony.stop_mode, crate::schema::StopMode::Pitch);
+    }
+
+    #[test]
+    fn preserves_split_track_dynamics_depth_independently() {
+        let previous = crate::schema::parse_project(serde_json::json!({
+            "version": 1, "name": "prev",
+            "tracks": [
+                { "id": "mel", "name": "m", "midiIndex": 0, "drumMode": false, "dynamicsDepth": 0.25 },
+                { "id": "drm", "name": "d", "midiIndex": 0, "drumMode": true, "dynamicsDepth": 0.75 }
+            ]
+        }))
+        .unwrap();
+        let events = vec![
+            note_on_ch(0, 0, 60, 100),
+            note_off_ch(240, 0, 60),
+            note_on_ch(0, GM_DRUM_CHANNEL, 38, 100),
+            note_off_ch(240, GM_DRUM_CHANNEL, 38),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", Some(&previous)).unwrap();
+        let melodic = result.project.tracks.iter().find(|t| !t.drum_mode).unwrap();
+        let drum = result.project.tracks.iter().find(|t| t.drum_mode).unwrap();
+        assert!((melodic.dynamics_depth - 0.25).abs() < 1e-9);
+        assert!((drum.dynamics_depth - 0.75).abs() < 1e-9);
     }
 
     #[test]

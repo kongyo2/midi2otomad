@@ -315,8 +315,8 @@ fn render_note(
     };
 
     let depth = track.dynamics_depth.clamp(0.0, 1.0);
-    let vel_gain = scale_dynamics(velocity_to_gain(note.velocity as f64), depth);
-    let static_gain = vel_gain * sample.gain * track.gain * master_gain;
+    let vel_gain = velocity_to_gain(note.velocity as f64);
+    let note_gain = sample.gain * track.gain * master_gain;
     let (trim_start, trim_end) = resolve_trim(sample, src);
     let loop_region = resolve_loop(sample, src, (trim_start, trim_end));
     let interp = sample.interpolation;
@@ -424,11 +424,12 @@ fn render_note(
                     Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
                     _ => 1.0,
                 };
-                let dyn_v = match track_dyn {
+                let cc_gain = match track_dyn {
                     None => 1.0,
-                    Some(td) => scale_dynamics(td[out_idx] as f64, depth),
+                    Some(td) => td[out_idx] as f64,
                 };
-                let amp = env * static_gain * dyn_v * cut_gain;
+                let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
+                let amp = env * note_gain * dyn_gain * cut_gain;
                 let out_l = s_l * amp * pan.0;
                 let out_r = s_r * amp * pan.1;
                 left[out_idx] = (left[out_idx] as f64 + out_l) as f32;
