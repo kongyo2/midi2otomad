@@ -312,14 +312,35 @@ fn sample_playback(note: &Note, sample: &Sample, drum_mode: bool) -> Playback {
     }
 }
 
-fn oneshot_out_sec(sample: &Sample, trim_len: i64, src_rate: f64, play: &Playback) -> f64 {
-    let base = (trim_len as f64 / src_rate / play.speed_ratio).max(0.0);
-    let glide_pad = if !play.granular && sample.pitch_mod.glide_semitones < 0.0 {
-        sample.pitch_mod.glide_ms / 1000.0
-    } else {
-        0.0
-    };
-    base + glide_pad
+fn oneshot_out_sec(
+    sample: &Sample,
+    trim_start: i64,
+    trim_end: i64,
+    src: &PcmAudio,
+    out_rate: f64,
+    play: &Playback,
+) -> f64 {
+    let trim_len = (trim_end - trim_start) as f64;
+    if trim_len <= 0.0 || out_rate <= 0.0 || src.sample_rate <= 0.0 {
+        return 0.0;
+    }
+    let closed_form = trim_len / src.sample_rate / play.speed_ratio;
+    let base_increment = (src.sample_rate / out_rate) * play.pitch_ratio;
+    let pitch_modulated =
+        sample.pitch_mod.glide_semitones != 0.0 || sample.pitch_mod.vibrato_cents != 0.0;
+    if play.granular || !pitch_modulated || base_increment <= 0.0 {
+        return closed_form;
+    }
+    let max_frames = (out_rate * 600.0) as i64;
+    let mut traveled = 0.0;
+    let mut i: i64 = 0;
+    while traveled < trim_len && i < max_frames {
+        let t = i as f64 / out_rate;
+        let inc = base_increment * semitones_to_ratio(pitch_offset_semitones(&sample.pitch_mod, t));
+        traveled += inc.max(1e-9);
+        i += 1;
+    }
+    i as f64 / out_rate
 }
 
 fn wrap_loop(pos: f64, region: Option<LoopRegion>) -> f64 {
@@ -389,7 +410,7 @@ fn render_note(
     let start_frame = (note.start_sec * out_rate).round() as i64;
     let release_sec = sample.envelope.release_ms / 1000.0;
     let gate_sec = if one_shot {
-        oneshot_out_sec(sample, trim_end - trim_start, src.sample_rate, &play)
+        oneshot_out_sec(sample, trim_start, trim_end, src, out_rate, &play)
     } else {
         note.duration_sec
     };
@@ -569,13 +590,19 @@ fn render_note(
     }
 }
 
-fn sounding_duration_sec(note: &Note, sample: &Sample, src: &PcmAudio, drum_mode: bool) -> f64 {
+fn sounding_duration_sec(
+    note: &Note,
+    sample: &Sample,
+    src: &PcmAudio,
+    out_rate: f64,
+    drum_mode: bool,
+) -> f64 {
     let release = sample.envelope.release_ms / 1000.0;
     let gate_plus_release = note.duration_sec + release;
     let play = sample_playback(note, sample, drum_mode);
     let (trim_start, trim_end) = resolve_trim(sample, src);
     if sample.one_shot {
-        return oneshot_out_sec(sample, trim_end - trim_start, src.sample_rate, &play) + release;
+        return oneshot_out_sec(sample, trim_start, trim_end, src, out_rate, &play) + release;
     }
     let looped = !play.reverse && resolve_loop(sample, src, (trim_start, trim_end)).is_some();
     let pitch_modulated =
@@ -655,6 +682,7 @@ fn plan_track_voices<'a>(
     track: &'a Track,
     sample_by_id: &HashMap<&str, &'a Sample>,
     bank: &'a dyn AudioBank,
+    out_rate: f64,
 ) -> Vec<PlannedVoice<'a>> {
     let resolved: Vec<(&Note, Vec<(&'a Sample, &'a PcmAudio)>)> = track
         .notes
@@ -671,7 +699,9 @@ fn plan_track_voices<'a>(
             start_sec: note.start_sec,
             duration_sec: sources
                 .iter()
-                .map(|(sample, src)| sounding_duration_sec(note, sample, src, track.drum_mode))
+                .map(|(sample, src)| {
+                    sounding_duration_sec(note, sample, src, out_rate, track.drum_mode)
+                })
                 .fold(0.0, f64::max),
             sample_id: sources[0].0.id.clone(),
         })
@@ -691,9 +721,13 @@ fn plan_track_voices<'a>(
                 .map(|(s, _)| s.envelope.release_ms)
                 .fold(0.0, f64::max)
                 / 1000.0;
-            let natural = requests[alloc.index]
-                .duration_sec
-                .max(note.duration_sec + max_release);
+            let one_shot = sources.first().map(|(s, _)| s.one_shot).unwrap_or(false);
+            let gate_floor = if one_shot {
+                0.0
+            } else {
+                note.duration_sec + max_release
+            };
+            let natural = requests[alloc.index].duration_sec.max(gate_floor);
             let end_sec = match cut_sec {
                 None => note.start_sec + natural,
                 Some(cs) => note.start_sec + cs + CHOKE_RELEASE_MS / 1000.0,
@@ -766,7 +800,7 @@ pub fn mix_project<'a>(
         .filter(|t| track_renders(t, solo))
         .map(|t| TrackPlan {
             track: t,
-            voices: plan_track_voices(t, &sample_by_id, bank),
+            voices: plan_track_voices(t, &sample_by_id, bank, out_rate),
         })
         .collect();
 
@@ -2462,6 +2496,51 @@ mod tests {
         assert!(
             m.left[1].abs() > 0.2,
             "reverse must still emit the head (first trimmed) frame"
+        );
+    }
+
+    #[test]
+    fn one_shot_resample_constant_vibrato_plays_full_sample() {
+        let project = make_project(
+            json!([sample_raw(json!({
+                "envelope": { "attackMs": 0, "releaseMs": 0 },
+                "oneShot": true,
+                "pitchMod": { "vibratoCents": 1200, "vibratoHz": 0, "vibratoShape": "saw" }
+            }))]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.05, "velocity": 127 }] })
+            )]),
+        );
+        let m = mix(&project, &bank1("s1", mono_ramp_source(500)), limiter_off());
+        assert!(
+            m.left[560].abs() > 0.0,
+            "a constant downward vibrato (0 Hz saw) slows the read head; the one-shot must not cut early"
+        );
+    }
+
+    #[test]
+    fn one_shot_under_long_note_is_not_padded_to_the_gate() {
+        let project = make_project(
+            json!([sample_raw(
+                json!({ "envelope": { "attackMs": 0, "releaseMs": 0 }, "oneShot": true })
+            )]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 2.0, "velocity": 127 }] })
+            )]),
+        );
+        let m = mix(
+            &project,
+            &bank1("s1", const_source(1.0, 200)),
+            MixOptions {
+                tail_sec: Some(0.0),
+                limiter: Some(false),
+            },
+        );
+        assert!(m.left[100].abs() > 0.5, "one-shot plays its short sample");
+        assert!(
+            m.duration_sec < 1.0,
+            "mix end must track the sample length, not the 2s note gate (was {})",
+            m.duration_sec
         );
     }
 }
