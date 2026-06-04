@@ -94,7 +94,7 @@ pub struct MixOptions {
 
 const MIN_FRAMES: usize = 1;
 
-const RENDER_BATCH: usize = 256;
+const RENDER_BATCH_BYTES: usize = 128 << 20;
 
 const CHOKE_RELEASE_MS: f64 = 5.0;
 
@@ -962,11 +962,24 @@ pub fn mix_project<'a>(
         .collect();
 
     let mut jobs: Vec<RenderJob> = Vec::new();
+    let mut batch_ends: Vec<usize> = Vec::new();
+    let mut batch_bytes: usize = 0;
     for (ti, tp) in plans.iter().enumerate() {
         let pan = pan_gains(tp.track.pan);
         let track_dyn = track_dyns[ti].as_deref();
+        let send_channels = if audible && tp.track.reverb_send > 0.0 {
+            2
+        } else {
+            0
+        };
         for voice in &tp.voices {
+            let span = ((voice.end_sec - voice.note.start_sec).max(0.0) * out_rate) as usize;
+            let job_bytes = span.saturating_mul(8 * (2 + send_channels));
             for &(sample, src) in &voice.sources {
+                if batch_bytes > 0 && batch_bytes + job_bytes > RENDER_BATCH_BYTES {
+                    batch_ends.push(jobs.len());
+                    batch_bytes = 0;
+                }
                 jobs.push(RenderJob {
                     note: voice.note,
                     sample,
@@ -976,9 +989,11 @@ pub fn mix_project<'a>(
                     pan,
                     cut_sec: voice.cut_sec,
                 });
+                batch_bytes += job_bytes;
             }
         }
     }
+    batch_ends.push(jobs.len());
 
     let ctx = RenderCtx {
         out_rate,
@@ -987,8 +1002,9 @@ pub fn mix_project<'a>(
         audible,
         quality,
     };
-    for batch in jobs.chunks(RENDER_BATCH) {
-        for vr in render_jobs(batch, ctx) {
+    let mut batch_start = 0;
+    for &batch_end in &batch_ends {
+        for vr in render_jobs(&jobs[batch_start..batch_end], ctx) {
             accumulate(&mut left, &vr.left, vr.start);
             accumulate(&mut right, &vr.right, vr.start);
             if let (Some((sl_w, sr_w)), Some((sl, sr))) = (&vr.send, send.as_mut()) {
@@ -996,6 +1012,7 @@ pub fn mix_project<'a>(
                 accumulate(sr, sr_w, vr.start);
             }
         }
+        batch_start = batch_end;
     }
 
     if let Some((sl, sr)) = &send {
