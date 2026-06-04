@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use midi2otomad_core::schema::Reverb;
 
 use crate::format::{format_db, format_rate, pct};
 use crate::state::Studio;
@@ -10,23 +11,45 @@ const SAMPLE_RATES: [i32; 4] = [44100, 48000, 88200, 96000];
 pub fn ReverbPanel() -> impl IntoView {
     let s = expect_context::<Studio>();
     let enabled = Signal::derive(move || s.project.with(|p| p.reverb.enabled));
+    let modified = Signal::derive(move || {
+        s.project.with(|p| {
+            p.reverb
+                != Reverb {
+                    enabled: p.reverb.enabled,
+                    ..Reverb::default()
+                }
+        })
+    });
 
     view! {
         <section class="panel">
             <div class="panel__head">
                 <h2 class="panel__heading">"マスターリバーブ"</h2>
-                <label class="checkline">
-                    <input
-                        type="checkbox"
-                        prop:checked=move || enabled.get()
-                        on:change=move |ev| {
-                            let c = event_target_checked(&ev);
-                            s.project.update(|p| p.reverb.enabled = c);
+                <div class="headtools">
+                    <button
+                        class="linkbtn"
+                        title="リバーブのパラメータを初期値に戻す（オン/オフは保持）"
+                        style:visibility=move || if modified.get() { "visible" } else { "hidden" }
+                        on:click=move |_| {
+                            s.project.update(|p| p.reverb = Reverb { enabled: p.reverb.enabled, ..Reverb::default() });
                             s.mark_dirty();
                         }
-                    />
-                    "有効"
-                </label>
+                    >
+                        "↺ リセット"
+                    </button>
+                    <label class="checkline">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || enabled.get()
+                            on:change=move |ev| {
+                                let c = event_target_checked(&ev);
+                                s.project.update(|p| p.reverb.enabled = c);
+                                s.mark_dirty();
+                            }
+                        />
+                        "有効"
+                    </label>
+                </div>
             </div>
             <p class="panel__muted small">
                 "トラックの「リバーブ送り」で各楽器の残響量を調整できます。"
