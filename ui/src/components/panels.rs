@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use midi2otomad_core::schema::Reverb;
 
 use crate::format::{format_db, format_rate, pct};
+use crate::icons::{icon_piano, icon_rotate_ccw};
 use crate::state::Studio;
 use crate::widgets::range_row;
 
@@ -35,7 +36,8 @@ pub fn ReverbPanel() -> impl IntoView {
                             s.mark_dirty();
                         }
                     >
-                        "↺ リセット"
+                        {icon_rotate_ccw()}
+                        "リセット"
                     </button>
                     <label class="checkline">
                         <input
@@ -128,7 +130,8 @@ pub fn HelpPanel() -> impl IntoView {
                 <li>"WAV / MP3 に高音質で書き出し"</li>
             </ol>
             <p class="help__note">
-                "🎹 ノートの音高は素材の基準ピッチからの差分で再生速度を変えて発音します。再生は3次エルミート補間で高品質に。ベロシティとエクスプレッション(CC11)は音量に反映され、トラック設定の「演奏表現」で音程（ピッチ）と抑揚（強弱）を独立して反映・固定できます。ロングトーンはループ範囲で持続します。フィルターはアンプEG連動スイープと LFO ワブルで時間変化させられます。"
+                {icon_piano()}
+                "ノートの音高は素材の基準ピッチからの差分で再生速度を変えて発音します。再生は3次エルミート補間で高品質に。ベロシティとエクスプレッション(CC11)は音量に反映され、トラック設定の「演奏表現」で音程（ピッチ）と抑揚（強弱）を独立して反映・固定できます。ロングトーンはループ範囲で持続します。フィルターはアンプEG連動スイープと LFO ワブルで時間変化させられます。"
             </p>
         </section>
     }

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use midi2otomad_core::music::midi_to_note_name;
 
+use crate::icons::{icon_repeat, icon_scissors, icon_x};
 use crate::state::Studio;
 
 fn mini_bars(peaks: &[f32]) -> Vec<f64> {
@@ -55,12 +56,12 @@ pub fn SampleLibrary() -> impl IntoView {
                                         let bars = mini_bars(
                                             s.peaks.get_untracked().get(&id).map(Vec::as_slice).unwrap_or(&[]),
                                         );
+                                        let trim_on = sample.trim.enabled;
+                                        let loop_on = sample.loop_region.enabled;
                                         let sub = format!(
-                                            "基準 {} · {:.2}s{}{}",
+                                            "基準 {} · {:.2}s",
                                             midi_to_note_name(sample.base_pitch as f64),
                                             sample.duration_sec,
-                                            if sample.trim.enabled { " · ✂trim" } else { "" },
-                                            if sample.loop_region.enabled { " · ⟳loop" } else { "" },
                                         );
                                         view! {
                                             <li>
@@ -86,7 +87,11 @@ pub fn SampleLibrary() -> impl IntoView {
                                                     </span>
                                                     <span class="samplelist__meta">
                                                         <span class="samplelist__name">{sample.name.clone()}</span>
-                                                        <span class="samplelist__sub">{sub}</span>
+                                                        <span class="samplelist__sub">
+                                                            {sub}
+                                                            {trim_on.then(|| view! { <span class="samplelist__badge samplelist__badge--trim" title="トリム">{icon_scissors()}<span class="sr-only">" トリム"</span></span> })}
+                                                            {loop_on.then(|| view! { <span class="samplelist__badge samplelist__badge--loop" title="ループ">{icon_repeat()}<span class="sr-only">" ループ"</span></span> })}
+                                                        </span>
                                                     </span>
                                                 </button>
                                                 <button
@@ -94,7 +99,7 @@ pub fn SampleLibrary() -> impl IntoView {
                                                     title="削除"
                                                     on:click=move |_| s.remove_sample(id_rm.clone())
                                                 >
-                                                    "✕"
+                                                    {icon_x()}
                                                 </button>
                                             </li>
                                         }

@@ -3,6 +3,7 @@ use midi2otomad_core::schema::Track;
 use wasm_bindgen::JsCast;
 
 use crate::format::format_time;
+use crate::icons::{icon_zoom_in, icon_zoom_out};
 use crate::state::{project_duration, Studio};
 use crate::widgets::context_2d;
 
@@ -250,12 +251,12 @@ pub fn Timeline() -> impl IntoView {
             <div class="timeline-toolbar">
                 <span class="timeline-toolbar__title">"タイムライン / ピアノロール"</span>
                 <div class="timeline-toolbar__zoom">
-                    <button class="iconbtn" on:click=move |_| px_requested.update(|v| *v = (*v - 16.0).max(24.0))>
-                        "－"
+                    <button class="iconbtn" title="ズームアウト" on:click=move |_| px_requested.update(|v| *v = (*v - 16.0).max(24.0))>
+                        {icon_zoom_out()}
                     </button>
                     <span class="zoomlabel">{move || format!("{}px/s", px_per_sec.get().round() as i64)}</span>
-                    <button class="iconbtn" on:click=move |_| px_requested.update(|v| *v = (*v + 16.0).min(200.0))>
-                        "＋"
+                    <button class="iconbtn" title="ズームイン" on:click=move |_| px_requested.update(|v| *v = (*v + 16.0).min(200.0))>
+                        {icon_zoom_in()}
                     </button>
                 </div>
             </div>

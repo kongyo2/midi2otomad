@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::format::format_time;
+use crate::icons::{icon_download, icon_pause, icon_play, icon_skip_back, icon_stop};
 use crate::state::{project_duration, Studio};
 
 #[component]
@@ -76,16 +77,17 @@ pub fn TopBar() -> impl IntoView {
 
             <div class="topbar__transport">
                 <button class="transportbtn" title="先頭へ" on:click=move |_| s.seek(0.0)>
-                    "⏮"
+                    {icon_skip_back()}
                 </button>
                 <button
                     class="transportbtn transportbtn--main"
+                    title=move || if s.status.get().playing { "一時停止" } else { "再生" }
                     on:click=move |_| s.toggle_play()
                 >
-                    {move || if s.status.get().playing { "⏸" } else { "▶" }}
+                    {move || if s.status.get().playing { icon_pause().into_any() } else { icon_play().into_any() }}
                 </button>
                 <button class="transportbtn" title="停止" on:click=move |_| s.stop()>
-                    "⏹"
+                    {icon_stop()}
                 </button>
                 <span class="topbar__time">
                     {move || format_time(position())}
@@ -171,7 +173,13 @@ pub fn TopBar() -> impl IntoView {
                     }
                 }}
                 <button class="btn" prop:disabled=move || s.busy.get().is_some() on:click=do_export>
-                    {move || if s.busy.get().is_some() { "処理中…" } else { "⬇ 書き出し" }}
+                    {move || {
+                        if s.busy.get().is_some() {
+                            view! { "処理中…" }.into_any()
+                        } else {
+                            view! { {icon_download()} "書き出し" }.into_any()
+                        }
+                    }}
                 </button>
             </div>
         </header>
