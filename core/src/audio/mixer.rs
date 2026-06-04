@@ -497,8 +497,15 @@ fn render_note(
                 spawn_pos >= trim_start as f64
             };
             let may_spawn = loop_region.is_some() || within;
+            let trim_lo = trim_start as f64;
+            let trim_hi = (trim_end - 1).max(trim_start) as f64;
             let (l, r) = cloud.process(spawn_pos, read_adv, may_spawn, |p| {
-                read_lr(ch0, ch1, mono, frames, p, interp, loop_region)
+                let cp = if loop_region.is_some() {
+                    p
+                } else {
+                    p.clamp(trim_lo, trim_hi)
+                };
+                read_lr(ch0, ch1, mono, frames, cp, interp, loop_region)
             });
             time_pos += dir * time_increment;
             let alive = loop_region.is_some() || cloud.active();
@@ -2541,6 +2548,36 @@ mod tests {
             m.duration_sec < 1.0,
             "mix end must track the sample length, not the 2s note gate (was {})",
             m.duration_sec
+        );
+    }
+
+    #[test]
+    fn reverse_granular_does_not_leak_pre_trim_audio() {
+        let mut channel = vec![0.9f32; 200];
+        for v in channel[100..200].iter_mut() {
+            *v = 0.1;
+        }
+        let src = PcmAudio {
+            sample_rate: 1000.0,
+            channels: vec![channel],
+            frames: 200,
+        };
+        let project = make_project(
+            json!([sample_raw(json!({
+                "envelope": { "attackMs": 0, "releaseMs": 0 },
+                "pitchMode": "granular", "speed": 1.0, "reverse": true, "oneShot": true, "grainMs": 60,
+                "trim": { "enabled": true, "startSec": 0.1, "endSec": 0.2 }
+            }))]),
+            json!([track_raw(
+                json!({ "notes": [{ "pitch": 60, "startSec": 0, "durationSec": 0.5, "velocity": 127 }] })
+            )]),
+        );
+        let m = mix(&project, &bank1("s1", src), limiter_off());
+        let peak = m.left.iter().fold(0.0f32, |p, &v| p.max(v.abs()));
+        assert!(peak > 0.0, "reversed granular should produce audio");
+        assert!(
+            peak < 0.3,
+            "trimmed-off head (0.9) must not leak into reversed granular output (peak {peak})"
         );
     }
 }

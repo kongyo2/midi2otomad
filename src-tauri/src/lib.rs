@@ -333,14 +333,17 @@ fn preview_sample(
             clip_sec
         };
         let natural = trimmed_sec.min(2.2);
-        if sample.loop_region.enabled {
+        if sample.loop_region.enabled && !sample.one_shot {
             1.4
         } else {
             natural
         }
         .max(0.05)
     };
-    sample.one_shot = false;
+    if sample.one_shot {
+        sample.one_shot = false;
+        sample.loop_region.enabled = false;
+    }
     let sample_value = serde_json::to_value(&sample).map_err(|e| e.to_string())?;
     let project = parse_project(json!({
         "version": 1,
