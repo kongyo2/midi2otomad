@@ -267,11 +267,12 @@ fn track_renders(track: &Track, solo: bool) -> bool {
     !track.muted && (!solo || track.solo)
 }
 
-fn modulated_cutoff(filter: &Filter, env: f64, t_sec: f64, nyquist: f64) -> f64 {
-    let octaves = filter.env_amount * env
-        + filter.lfo_depth * lfo_value(filter.lfo_shape, t_sec * filter.lfo_hz);
-    let cutoff = filter.cutoff_hz * 2f64.powf(octaves);
-    cutoff.clamp(20.0, nyquist)
+fn filter_octaves(filter: &Filter, env: f64, t_sec: f64) -> f64 {
+    filter.env_amount * env + filter.lfo_depth * lfo_value(filter.lfo_shape, t_sec * filter.lfo_hz)
+}
+
+fn cutoff_from_octaves(filter: &Filter, octaves: f64, nyquist: f64) -> f64 {
+    (filter.cutoff_hz * 2f64.powf(octaves)).clamp(20.0, nyquist)
 }
 
 struct Playback {
@@ -505,6 +506,7 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
         None
     };
     let mut modulated_coeffs: Option<BiquadCoeffs> = None;
+    let mut last_octaves: Option<f64> = None;
     let mut state_l = create_biquad_state();
     let mut state_r = create_biquad_state();
     let reverb_send = track.reverb_send;
@@ -606,20 +608,24 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
             break;
         }
         if !alive {
-            continue;
+            break;
         }
 
         let env = env_shape.level_at(t_sec);
         let (s_l, s_r) = if filter.enabled {
             let coeffs = if filter_modulated {
                 if i % filter_block == 0 {
-                    modulated_coeffs = Some(design_biquad(
-                        filter.kind,
-                        modulated_cutoff(filter, env, t_sec, nyquist),
-                        out_rate,
-                        filter.q,
-                        filter.gain_db,
-                    ));
+                    let octaves = filter_octaves(filter, env, t_sec);
+                    if last_octaves != Some(octaves) {
+                        last_octaves = Some(octaves);
+                        modulated_coeffs = Some(design_biquad(
+                            filter.kind,
+                            cutoff_from_octaves(filter, octaves, nyquist),
+                            out_rate,
+                            filter.q,
+                            filter.gain_db,
+                        ));
+                    }
                 }
                 modulated_coeffs
             } else {
