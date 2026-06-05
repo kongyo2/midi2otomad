@@ -2,6 +2,7 @@ use super::envelope::EnvShape;
 use super::filter::{create_biquad_state, design_biquad, process_biquad_sample, BiquadCoeffs};
 use super::granular::{GrainCloud, DEFAULT_OVERLAP};
 use super::lfo::lfo_value;
+use super::limiter::{limit_stereo, LimiterParams};
 use super::pitchmod::pitch_offset_semitones;
 use super::polyphony::{allocate_voices, VoiceRequest};
 use super::reverb::{create_reverb, reverb_decay_seconds, ReverbParams};
@@ -90,6 +91,7 @@ pub struct MixOptions {
     pub tail_sec: Option<f64>,
     pub limiter: Option<bool>,
     pub quality: RenderQuality,
+    pub target_rate: Option<f64>,
 }
 
 const MIN_FRAMES: usize = 1;
@@ -100,10 +102,11 @@ const CHOKE_RELEASE_MS: f64 = 5.0;
 
 const PERF_PREVIEW_RATE: f64 = 32000.0;
 
-fn render_rate(project_rate: f64, quality: RenderQuality) -> f64 {
+fn render_rate(project_rate: f64, quality: RenderQuality, target: Option<f64>) -> f64 {
+    let base = target.filter(|r| *r > 0.0).unwrap_or(project_rate);
     match quality {
-        RenderQuality::Performance => project_rate.min(PERF_PREVIEW_RATE),
-        RenderQuality::Full => project_rate,
+        RenderQuality::Performance => base.min(PERF_PREVIEW_RATE),
+        RenderQuality::Full => base,
     }
 }
 
@@ -211,6 +214,15 @@ fn read_sample(
     let frac = pos - i0 as f64;
     match interp {
         InterpolationMode::Linear => {
+            if region.is_none() {
+                let hi_c = hi.min(channel.len() as i64);
+                if i0 >= lo && i0 + 1 < hi_c {
+                    let i = i0 as usize;
+                    let a = finite(channel[i]);
+                    let b = finite(channel[i + 1]);
+                    return a + (b - a) * frac;
+                }
+            }
             let a = sample_at(channel, lo, hi, i0, region);
             let b = sample_at(channel, lo, hi, i0 + 1, region);
             a + (b - a) * frac
@@ -239,16 +251,6 @@ fn read_sample(
             super::interpolation::cubic_hermite(y0, y1, y2, y3, frac)
         }
     }
-}
-
-fn soft_clip(x: f64, threshold: f64) -> f64 {
-    let abs = x.abs();
-    if abs <= threshold {
-        return x;
-    }
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let over = (abs - threshold) / (1.0 - threshold);
-    sign * (threshold + (1.0 - threshold) * over.tanh())
 }
 
 fn pan_gains(pan: f64) -> (f64, f64) {
@@ -540,6 +542,7 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
     let env_shape = EnvShape::new(&sample.envelope, gate_sec);
     let inv_out_rate = 1.0 / out_rate;
     let has_dyn = !vol.is_empty() || !expr.is_empty();
+    let dyn_gain_const = scale_dynamics(vel_gain, depth);
     let mut vol_cur = 1usize;
     let mut expr_cur = 1usize;
 
@@ -651,13 +654,14 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
                 Some(cs) if t_sec > cs => 1.0 - (t_sec - cs) / choke_sec,
                 _ => 1.0,
             };
-            let cc_gain = if has_dyn {
+            let dyn_gain = if has_dyn {
                 let at = (start + idx) as f64 * inv_out_rate;
-                eval_automation(vol, at, &mut vol_cur) * eval_automation(expr, at, &mut expr_cur)
+                let cc_gain = eval_automation(vol, at, &mut vol_cur)
+                    * eval_automation(expr, at, &mut expr_cur);
+                scale_dynamics(vel_gain * cc_gain, depth)
             } else {
-                1.0
+                dyn_gain_const
             };
-            let dyn_gain = scale_dynamics(vel_gain * cc_gain, depth);
             let amp = env * note_gain * dyn_gain * cut_gain;
             let out_l = s_l * amp * pan.0;
             let out_r = s_r * amp * pan.1;
@@ -1024,7 +1028,7 @@ pub fn mix_project<'a>(
     options: &MixOptions,
 ) -> MixResult {
     let quality = options.quality;
-    let out_rate = render_rate(project.sample_rate as f64, quality);
+    let out_rate = render_rate(project.sample_rate as f64, quality, options.target_rate);
     let sample_by_id: HashMap<&str, &Sample> =
         project.samples.iter().map(|s| (s.id.as_str(), s)).collect();
     let tail_sec = options.tail_sec.unwrap_or(project.output.tail_sec);
@@ -1135,13 +1139,15 @@ pub fn mix_project<'a>(
     }
 
     if options.limiter.unwrap_or(project.output.limiter.enabled) {
-        let threshold = project.output.limiter.threshold;
-        for s in left.iter_mut() {
-            *s = soft_clip(*s as f64, threshold) as f32;
-        }
-        for s in right.iter_mut() {
-            *s = soft_clip(*s as f64, threshold) as f32;
-        }
+        limit_stereo(
+            &mut left,
+            &mut right,
+            out_rate,
+            LimiterParams {
+                ceiling: project.output.limiter.threshold,
+                ..Default::default()
+            },
+        );
     }
 
     MixResult {
@@ -1328,10 +1334,43 @@ mod tests {
 
     #[test]
     fn render_rate_caps_performance_only() {
-        assert_eq!(render_rate(48000.0, RenderQuality::Full), 48000.0);
-        assert_eq!(render_rate(48000.0, RenderQuality::Performance), 32000.0);
-        assert_eq!(render_rate(44100.0, RenderQuality::Performance), 32000.0);
-        assert_eq!(render_rate(22050.0, RenderQuality::Performance), 22050.0);
+        assert_eq!(render_rate(48000.0, RenderQuality::Full, None), 48000.0);
+        assert_eq!(
+            render_rate(48000.0, RenderQuality::Performance, None),
+            32000.0
+        );
+        assert_eq!(
+            render_rate(44100.0, RenderQuality::Performance, None),
+            32000.0
+        );
+        assert_eq!(
+            render_rate(22050.0, RenderQuality::Performance, None),
+            22050.0
+        );
+    }
+
+    #[test]
+    fn render_rate_honors_target_under_quality_cap() {
+        assert_eq!(
+            render_rate(48000.0, RenderQuality::Full, Some(44100.0)),
+            44100.0
+        );
+        assert_eq!(
+            render_rate(44100.0, RenderQuality::Full, Some(48000.0)),
+            48000.0
+        );
+        assert_eq!(
+            render_rate(48000.0, RenderQuality::Performance, Some(44100.0)),
+            32000.0
+        );
+        assert_eq!(
+            render_rate(48000.0, RenderQuality::Performance, Some(16000.0)),
+            16000.0
+        );
+        assert_eq!(
+            render_rate(48000.0, RenderQuality::Full, Some(0.0)),
+            48000.0
+        );
     }
 
     #[test]
@@ -1361,6 +1400,27 @@ mod tests {
         assert_eq!(perf.sample_rate, 32000.0);
         assert!(perf.peak > 0.0);
         assert!(perf.frames < full.frames);
+    }
+
+    #[test]
+    fn target_rate_overrides_project_rate_for_full_preview() {
+        let project = parse_project(json!({
+            "version": 1, "name": "t", "sampleRate": 48000, "masterGain": 1,
+            "samples": [sample_raw(json!({}))],
+            "tracks": [track_raw(json!({}))]
+        }))
+        .unwrap();
+        let bank = bank1("s1", const_source(1.0, 48000));
+        let device = mix(
+            &project,
+            &bank,
+            MixOptions {
+                target_rate: Some(44100.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(device.sample_rate, 44100.0);
+        assert!(device.peak > 0.0);
     }
 
     #[test]
@@ -2939,6 +2999,7 @@ mod tests {
             tail_sec: None,
             limiter: Some(false),
             quality: RenderQuality::Performance,
+            ..Default::default()
         }
     }
 
