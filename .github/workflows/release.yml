@@ -8,8 +8,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        id: create-release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: |
+            midi2otomad のインストーラ／実行ファイルです。お使いの OS のアセットをダウンロードしてください。
+
+            - **Windows** — `.exe`（NSIS インストーラ）または `.msi`
+            - **macOS**（Intel / Apple Silicon 共通のユニバーサルバイナリ）— `.dmg`
+            - **Linux** — `.AppImage`（そのまま実行）/ `.deb`（Debian・Ubuntu）/ `.rpm`（Fedora 等）
+        with:
+          script: |
+            const fs = require('fs');
+            const version = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version;
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              target_commitish: context.sha,
+              name: `midi2otomad v${version}`,
+              body: process.env.RELEASE_BODY,
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
+  build:
     name: ${{ matrix.label }}
+    needs: create-release
     runs-on: ${{ matrix.platform }}
     permissions:
       contents: write
@@ -51,22 +88,13 @@ jobs:
       - name: Install trunk and the Tauri CLI
         run: cargo install --locked trunk tauri-cli
 
-      - name: Build Tauri app and publish to GitHub Releases
+      - name: Build Tauri app and upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tauriScript: cargo tauri
-          tagName: v__VERSION__
-          releaseName: midi2otomad v__VERSION__
-          releaseBody: |
-            midi2otomad のインストーラ／実行ファイルです。お使いの OS のアセットをダウンロードしてください。
-
-            - **Windows** — `.exe`（NSIS インストーラ）または `.msi`
-            - **macOS**（Intel / Apple Silicon 共通のユニバーサルバイナリ）— `.dmg`
-            - **Linux** — `.AppImage`（そのまま実行）/ `.deb`（Debian・Ubuntu）/ `.rpm`（Fedora 等）
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
       - name: Upload installer artifacts
@@ -83,3 +111,24 @@ jobs:
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: warn
           retention-days: 14
+
+  publish-release:
+    name: Publish release
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number(process.env.RELEASE_ID),
+              draft: false,
+              prerelease: false,
+            });
