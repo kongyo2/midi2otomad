@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -37,7 +37,10 @@ jobs:
             const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
             const existing = releases.find((r) => r.tag_name === tag);
             if (existing) {
-              core.info(`Reusing existing release ${existing.id} for ${tag} (draft=${existing.draft})`);
+              if (!existing.draft) {
+                throw new Error(`A published release for ${tag} already exists (id ${existing.id}). Bump the version or delete that release before re-running.`);
+              }
+              core.info(`Reusing existing draft release ${existing.id} for ${tag}`);
               return existing.id;
             }
             const { data } = await github.rest.repos.createRelease({
