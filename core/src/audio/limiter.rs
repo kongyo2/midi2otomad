@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy)]
 pub struct LimiterParams {
     pub ceiling: f64,
+    pub attack_ms: f64,
     pub release_ms: f64,
 }
 
@@ -8,6 +9,7 @@ impl Default for LimiterParams {
     fn default() -> Self {
         Self {
             ceiling: 0.8,
+            attack_ms: 1.5,
             release_ms: 120.0,
         }
     }
@@ -29,15 +31,32 @@ pub fn limit_stereo(left: &mut [f32], right: &mut [f32], sample_rate: f64, param
         return;
     }
 
-    let rel = approach_coef(params.release_ms, sample_rate);
-    let mut g = 1.0f32;
-    for i in 0..n {
+    let mut gain = vec![1.0f32; n];
+    for (i, g) in gain.iter_mut().enumerate() {
         let peak = left[i].abs().max(right[i].abs());
-        let required = if peak > ceiling { ceiling / peak } else { 1.0 };
-        g = if required < g {
-            required
+        if peak > ceiling {
+            *g = ceiling / peak;
+        }
+    }
+
+    let atk = approach_coef(params.attack_ms, sample_rate);
+    let rel = approach_coef(params.release_ms, sample_rate);
+
+    for i in (0..n - 1).rev() {
+        let next = gain[i + 1];
+        let pulled = next + (1.0 - next) * atk;
+        if pulled < gain[i] {
+            gain[i] = pulled;
+        }
+    }
+
+    let mut g = gain[0];
+    for i in 0..n {
+        let target = gain[i];
+        g = if target < g {
+            target
         } else {
-            g + (required - g) * rel
+            g + (target - g) * rel
         };
         left[i] *= g;
         right[i] *= g;
@@ -123,19 +142,69 @@ mod tests {
     }
 
     #[test]
-    fn smooth_release_after_peak_is_gradual() {
+    fn gain_ducks_before_the_peak() {
         let mut l = vec![0.2f32; 4000];
         let mut r = vec![0.2f32; 4000];
-        for v in l.iter_mut().take(2000) {
-            *v = 4.0;
+        for v in l.iter_mut().skip(2000).take(10) {
+            *v = 5.0;
         }
-        for v in r.iter_mut().take(2000) {
-            *v = 4.0;
+        for v in r.iter_mut().skip(2000).take(10) {
+            *v = 5.0;
         }
-        limit_stereo(&mut l, &mut r, 48000.0, LimiterParams::default());
-        assert!(max_abs(&l) <= 0.8 + 1e-6);
-        assert!((l[2001] as f64).abs() < 0.2);
-        assert!((l[2500] as f64).abs() > (l[2001] as f64).abs());
+        limit_stereo(
+            &mut l,
+            &mut r,
+            48000.0,
+            LimiterParams {
+                ceiling: 0.8,
+                attack_ms: 3.0,
+                release_ms: 120.0,
+            },
+        );
+        assert!((l[1990] as f64).abs() < 0.2);
+    }
+
+    #[test]
+    fn loud_sine_is_scaled_not_clipped() {
+        let n = 24000usize;
+        let (freq, rate) = (200.0f64, 48000.0f64);
+        let input: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * freq * i as f64 / rate).sin() as f32 * 2.0)
+            .collect();
+        let mut l = input.clone();
+        let mut r = input.clone();
+        limit_stereo(&mut l, &mut r, rate, LimiterParams::default());
+
+        let s0 = 12000;
+        let (inp, out) = (&input[s0..], &l[s0..]);
+        let dot: f64 = out
+            .iter()
+            .zip(inp)
+            .map(|(&o, &x)| o as f64 * x as f64)
+            .sum();
+        let den: f64 = inp.iter().map(|&x| (x as f64) * (x as f64)).sum();
+        let scale = dot / den;
+        let resid: f64 = out
+            .iter()
+            .zip(inp)
+            .map(|(&o, &x)| {
+                let e = o as f64 - scale * x as f64;
+                e * e
+            })
+            .sum::<f64>()
+            .sqrt();
+        let sig: f64 = out
+            .iter()
+            .map(|&o| (o as f64) * (o as f64))
+            .sum::<f64>()
+            .sqrt();
+        assert!(
+            resid / sig < 0.1,
+            "limited sine deviates from a clean scaling (flat-topping?): {}",
+            resid / sig
+        );
+        let peak = max_abs(&l);
+        assert!((0.5..=0.8 + 1e-3).contains(&peak), "peak {peak}");
     }
 
     #[test]
