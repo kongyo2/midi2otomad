@@ -66,12 +66,20 @@ impl Player {
         })
     }
 
+    pub fn engine_rate(&self) -> u32 {
+        self.engine_rate
+    }
+
     pub fn set_mix(&self, left: &[f32], right: &[f32], mix_rate: f64) {
         let interleaved = if (mix_rate - self.engine_rate as f64).abs() < 1e-6 {
             interleave(left, right)
         } else {
-            let l = resample_channel(left, mix_rate, self.engine_rate as f64);
-            let r = resample_channel(right, mix_rate, self.engine_rate as f64);
+            let dst = self.engine_rate as f64;
+            let (l, r) = std::thread::scope(|scope| {
+                let lh = scope.spawn(|| resample_channel(left, mix_rate, dst));
+                let r = resample_channel(right, mix_rate, dst);
+                (lh.join().expect("リサンプルワーカーが panic しました"), r)
+            });
             interleave(&l, &r)
         };
         let resume = self

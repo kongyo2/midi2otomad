@@ -51,6 +51,10 @@ impl AppState {
             .map_err(|_| "バンクのロックに失敗".to_string())?;
         Ok(mix_project(project, &*bank, &options))
     }
+
+    fn engine_rate(&self) -> Option<f64> {
+        self.player.as_ref().map(|p| p.engine_rate() as f64)
+    }
 }
 
 #[derive(Serialize)]
@@ -374,6 +378,7 @@ fn preview_sample(
             limiter: Some(false),
             tail_sec: Some(0.1),
             quality: quality_for(performance.unwrap_or(false)),
+            target_rate: state.engine_rate(),
         },
     )?;
     load_into_player(&state, &mix);
@@ -393,6 +398,7 @@ fn set_mix(
         &project,
         MixOptions {
             quality: quality_for(performance.unwrap_or(false)),
+            target_rate: state.engine_rate(),
             ..Default::default()
         },
     )?;

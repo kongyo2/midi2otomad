@@ -56,7 +56,8 @@ pub fn decode_audio(bytes: &[u8]) -> Result<PcmAudio, String> {
                 }
                 for f in 0..frames {
                     for (c, channel) in channels.iter_mut().enumerate().take(num_ch) {
-                        channel.push(samples[f * num_ch + c]);
+                        let s = samples[f * num_ch + c];
+                        channel.push(if s.is_finite() { s } else { 0.0 });
                     }
                 }
             }

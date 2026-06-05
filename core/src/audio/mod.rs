@@ -4,6 +4,7 @@ pub mod filter;
 pub mod granular;
 pub mod interpolation;
 pub mod lfo;
+pub mod limiter;
 pub mod mixer;
 pub mod pitch_detect;
 pub mod pitchmod;
