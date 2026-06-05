@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "midi2otomad"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "cpal",
  "midi2otomad-core",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "midi2otomad-core"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "midly",
  "mp3lame-encoder",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "midi2otomad-ui"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "console_error_panic_hook",
  "gloo-timers",
