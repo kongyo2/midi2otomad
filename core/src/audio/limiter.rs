@@ -1,7 +1,6 @@
 #[derive(Debug, Clone, Copy)]
 pub struct LimiterParams {
     pub ceiling: f64,
-    pub attack_ms: f64,
     pub release_ms: f64,
 }
 
@@ -9,25 +8,14 @@ impl Default for LimiterParams {
     fn default() -> Self {
         Self {
             ceiling: 0.8,
-            attack_ms: 2.0,
             release_ms: 120.0,
         }
     }
 }
 
-pub fn soft_clip(x: f64, threshold: f64) -> f64 {
-    let abs = x.abs();
-    if abs <= threshold {
-        return x;
-    }
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let over = (abs - threshold) / (1.0 - threshold);
-    sign * (threshold + (1.0 - threshold) * over.tanh())
-}
-
-fn approach_coef(ms: f64, sample_rate: f64) -> f64 {
+fn approach_coef(ms: f64, sample_rate: f64) -> f32 {
     let samples = (ms / 1000.0 * sample_rate).max(1.0);
-    1.0 - (-1.0 / samples).exp()
+    (1.0 - (-1.0 / samples).exp()) as f32
 }
 
 pub fn limit_stereo(left: &mut [f32], right: &mut [f32], sample_rate: f64, params: LimiterParams) {
@@ -35,50 +23,24 @@ pub fn limit_stereo(left: &mut [f32], right: &mut [f32], sample_rate: f64, param
     if n == 0 {
         return;
     }
-    let ceiling = params.ceiling.clamp(1e-4, 1.0);
+    let ceiling = params.ceiling.clamp(1e-4, 1.0) as f32;
 
-    let peak_at = |i: usize| (left[i] as f64).abs().max((right[i] as f64).abs());
-    if !(0..n).any(|i| peak_at(i) > ceiling) {
+    if !(0..n).any(|i| left[i].abs().max(right[i].abs()) > ceiling) {
         return;
     }
 
-    let mut gain: Vec<f64> = (0..n)
-        .map(|i| {
-            let peak = peak_at(i);
-            if peak > ceiling {
-                ceiling / peak
-            } else {
-                1.0
-            }
-        })
-        .collect();
-
-    let atk = approach_coef(params.attack_ms, sample_rate);
     let rel = approach_coef(params.release_ms, sample_rate);
-
-    for i in (0..n - 1).rev() {
-        let next = gain[i + 1];
-        let pulled = next + (1.0 - next) * atk;
-        if pulled < gain[i] {
-            gain[i] = pulled;
-        }
-    }
-
-    let mut g = gain[0];
-    for slot in gain.iter_mut() {
-        let target = *slot;
-        if target < g {
-            g = target;
-        } else {
-            g += (target - g) * rel;
-        }
-        *slot = g;
-    }
-
+    let mut g = 1.0f32;
     for i in 0..n {
-        let g = gain[i];
-        left[i] = soft_clip(left[i] as f64 * g, ceiling) as f32;
-        right[i] = soft_clip(right[i] as f64 * g, ceiling) as f32;
+        let peak = left[i].abs().max(right[i].abs());
+        let required = if peak > ceiling { ceiling / peak } else { 1.0 };
+        g = if required < g {
+            required
+        } else {
+            g + (required - g) * rel
+        };
+        left[i] *= g;
+        right[i] *= g;
     }
 }
 
@@ -88,15 +50,6 @@ mod tests {
 
     fn max_abs(a: &[f32]) -> f64 {
         a.iter().fold(0.0, |p, &v| p.max((v as f64).abs()))
-    }
-
-    #[test]
-    fn soft_clip_passes_small_signals() {
-        assert_eq!(soft_clip(0.5, 0.8), 0.5);
-        assert_eq!(soft_clip(-0.5, 0.8), -0.5);
-        assert!(soft_clip(2.0, 0.8) < 1.0);
-        assert!(soft_clip(2.0, 0.8) > 0.8);
-        assert!(soft_clip(-2.0, 0.8) > -1.0);
     }
 
     #[test]
@@ -170,26 +123,19 @@ mod tests {
     }
 
     #[test]
-    fn gain_ducks_before_the_peak() {
+    fn smooth_release_after_peak_is_gradual() {
         let mut l = vec![0.2f32; 4000];
         let mut r = vec![0.2f32; 4000];
-        for v in l.iter_mut().skip(2000).take(10) {
-            *v = 5.0;
+        for v in l.iter_mut().take(2000) {
+            *v = 4.0;
         }
-        for v in r.iter_mut().skip(2000).take(10) {
-            *v = 5.0;
+        for v in r.iter_mut().take(2000) {
+            *v = 4.0;
         }
-        limit_stereo(
-            &mut l,
-            &mut r,
-            48000.0,
-            LimiterParams {
-                ceiling: 0.8,
-                attack_ms: 3.0,
-                release_ms: 120.0,
-            },
-        );
-        assert!((l[1990] as f64).abs() < 0.2);
+        limit_stereo(&mut l, &mut r, 48000.0, LimiterParams::default());
+        assert!(max_abs(&l) <= 0.8 + 1e-6);
+        assert!((l[2001] as f64).abs() < 0.2);
+        assert!((l[2500] as f64).abs() > (l[2001] as f64).abs());
     }
 
     #[test]
