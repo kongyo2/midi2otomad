@@ -32,12 +32,20 @@ jobs:
           script: |
             const fs = require('fs');
             const version = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version;
+            const tag = `v${version}`;
+            const { owner, repo } = context.repo;
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const existing = releases.find((r) => r.tag_name === tag);
+            if (existing) {
+              core.info(`Reusing existing release ${existing.id} for ${tag} (draft=${existing.draft})`);
+              return existing.id;
+            }
             const { data } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: `v${version}`,
+              owner,
+              repo,
+              tag_name: tag,
               target_commitish: context.sha,
-              name: `midi2otomad v${version}`,
+              name: `midi2otomad ${tag}`,
               body: process.env.RELEASE_BODY,
               draft: true,
               prerelease: false,
