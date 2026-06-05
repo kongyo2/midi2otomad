@@ -462,19 +462,25 @@ fn render_note(job: &RenderJob, ctx: RenderCtx) -> VoiceRender {
     };
     let gate_frames = ((gate_sec * out_rate).round() as i64).max(1);
     let release_frames = ((release_sec * out_rate).round() as i64).max(0);
-    let voice_frames = gate_frames + release_frames;
-
-    let start = start_frame.max(0) as usize;
-    let window_len = voice_frames.min((total - start_frame).max(0)).max(0) as usize;
-    if window_len == 0 {
-        return VoiceRender::empty(start);
-    }
 
     let choke_sec = CHOKE_RELEASE_MS / 1000.0;
     let cut_end_sec = match cut_sec {
         None => f64::INFINITY,
         Some(cs) => cs + choke_sec,
     };
+    let natural_frames = gate_frames + release_frames;
+    let voice_frames = match cut_sec {
+        Some(cs) => natural_frames
+            .min(((cs + choke_sec) * out_rate).ceil() as i64 + 1)
+            .max(1),
+        None => natural_frames,
+    };
+
+    let start = start_frame.max(0) as usize;
+    let window_len = voice_frames.min((total - start_frame).max(0)).max(0) as usize;
+    if window_len == 0 {
+        return VoiceRender::empty(start);
+    }
 
     let depth = track.dynamics_depth.clamp(0.0, 1.0);
     let vel_gain = velocity_to_gain(note.velocity as f64);
