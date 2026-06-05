@@ -11,28 +11,38 @@ pub fn cubic_hermite(y0: f64, y1: f64, y2: f64, y3: f64, t: f64) -> f64 {
 }
 
 pub const SINC_HALF: usize = 8;
-
-fn sinc(x: f64) -> f64 {
-    if x.abs() < 1e-9 {
-        1.0
-    } else {
-        let px = std::f64::consts::PI * x;
-        px.sin() / px
-    }
-}
+const SINC_TAPS: usize = 2 * SINC_HALF;
 
 fn blackman(n: f64, taps: f64) -> f64 {
     let w = 2.0 * std::f64::consts::PI * n / (taps - 1.0);
     0.42 - 0.5 * w.cos() + 0.08 * (2.0 * w).cos()
 }
 
+fn sinc_window() -> &'static [f64; SINC_TAPS] {
+    static WINDOW: std::sync::OnceLock<[f64; SINC_TAPS]> = std::sync::OnceLock::new();
+    WINDOW.get_or_init(|| {
+        let mut w = [0.0f64; SINC_TAPS];
+        for (t, slot) in w.iter_mut().enumerate() {
+            *slot = blackman(t as f64, SINC_TAPS as f64);
+        }
+        w
+    })
+}
+
 pub fn windowed_sinc(i0: i64, frac: f64, mut at: impl FnMut(i64) -> f64) -> f64 {
-    let taps = (2 * SINC_HALF) as i64;
+    let window = sinc_window();
+    let sin_pi_frac = (std::f64::consts::PI * frac).sin();
     let mut acc = 0.0;
     let mut norm = 0.0;
-    for t in 0..taps {
-        let offset = t - SINC_HALF as i64 + 1;
-        let h = sinc(frac - offset as f64) * blackman(t as f64, taps as f64);
+    for (t, &win) in window.iter().enumerate() {
+        let offset = t as i64 - SINC_HALF as i64 + 1;
+        let x = frac - offset as f64;
+        let h = if x.abs() < 1e-9 {
+            win
+        } else {
+            let sign = if offset & 1 == 0 { 1.0 } else { -1.0 };
+            sign * sin_pi_frac / (std::f64::consts::PI * x) * win
+        };
         acc += at(i0 + offset) * h;
         norm += h;
     }
@@ -115,6 +125,48 @@ mod tests {
         let at = |idx: i64| data[idx.clamp(0, 39) as usize];
         for i0 in 8..30 {
             assert!(close(windowed_sinc(i0, 0.0, at), data[i0 as usize], 9));
+        }
+    }
+
+    fn naive_windowed_sinc(i0: i64, frac: f64, at: impl Fn(i64) -> f64) -> f64 {
+        fn sinc(x: f64) -> f64 {
+            if x.abs() < 1e-9 {
+                1.0
+            } else {
+                let px = std::f64::consts::PI * x;
+                px.sin() / px
+            }
+        }
+        let taps = (2 * SINC_HALF) as i64;
+        let mut acc = 0.0;
+        let mut norm = 0.0;
+        for t in 0..taps {
+            let offset = t - SINC_HALF as i64 + 1;
+            let h = sinc(frac - offset as f64) * blackman(t as f64, taps as f64);
+            acc += at(i0 + offset) * h;
+            norm += h;
+        }
+        if norm.abs() > 1e-12 {
+            acc / norm
+        } else {
+            acc
+        }
+    }
+
+    #[test]
+    fn fast_sinc_matches_naive_reference() {
+        let data: Vec<f64> = (0..256).map(|i| (i as f64 * 0.17).sin() * 0.6).collect();
+        let at = |idx: i64| data[idx.clamp(0, 255) as usize];
+        for step in 0..1000 {
+            let frac = step as f64 / 1000.0;
+            for &i0 in &[8i64, 40, 99, 200] {
+                let fast = windowed_sinc(i0, frac, at);
+                let naive = naive_windowed_sinc(i0, frac, at);
+                assert!(
+                    (fast - naive).abs() < 1e-9,
+                    "frac={frac} i0={i0} fast={fast} naive={naive}"
+                );
+            }
         }
     }
 
