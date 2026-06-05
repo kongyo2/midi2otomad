@@ -1,42 +1,89 @@
 use super::curve::shape_curve;
 use crate::schema::Envelope;
 
-fn pre_release_level(env: &Envelope, t: f64) -> f64 {
-    let delay = env.delay_ms / 1000.0;
-    let attack = env.attack_ms / 1000.0;
-    let hold = env.hold_ms / 1000.0;
-    let decay = env.decay_ms / 1000.0;
-    let attack_end = delay + attack;
-    let hold_end = attack_end + hold;
-    let decay_end = hold_end + decay;
-    if t < delay {
-        return 0.0;
+#[derive(Debug, Clone, Copy)]
+pub struct EnvShape {
+    delay: f64,
+    attack_end: f64,
+    hold_end: f64,
+    decay_end: f64,
+    inv_attack: f64,
+    inv_decay: f64,
+    inv_release: f64,
+    sustain: f64,
+    attack_curve: f64,
+    decay_curve: f64,
+    release_curve: f64,
+    gate_sec: f64,
+    level_at_gate: f64,
+}
+
+impl EnvShape {
+    pub fn new(env: &Envelope, gate_sec: f64) -> Self {
+        let delay = env.delay_ms / 1000.0;
+        let attack = env.attack_ms / 1000.0;
+        let hold = env.hold_ms / 1000.0;
+        let decay = env.decay_ms / 1000.0;
+        let release = env.release_ms / 1000.0;
+        let attack_end = delay + attack;
+        let hold_end = attack_end + hold;
+        let decay_end = hold_end + decay;
+        let inv = |span: f64| if span > 0.0 { 1.0 / span } else { 0.0 };
+        let mut shape = Self {
+            delay,
+            attack_end,
+            hold_end,
+            decay_end,
+            inv_attack: inv(attack),
+            inv_decay: inv(decay),
+            inv_release: inv(release),
+            sustain: env.sustain,
+            attack_curve: env.attack_curve,
+            decay_curve: env.decay_curve,
+            release_curve: env.release_curve,
+            gate_sec,
+            level_at_gate: 0.0,
+        };
+        shape.level_at_gate = shape.pre_release(gate_sec);
+        shape
     }
-    if t < attack_end {
-        return shape_curve((t - delay) / attack, env.attack_curve);
+
+    fn pre_release(&self, t: f64) -> f64 {
+        if t < self.delay {
+            return 0.0;
+        }
+        if t < self.attack_end {
+            return shape_curve((t - self.delay) * self.inv_attack, self.attack_curve);
+        }
+        if t < self.hold_end {
+            return 1.0;
+        }
+        if t < self.decay_end {
+            return 1.0
+                - (1.0 - self.sustain)
+                    * shape_curve((t - self.hold_end) * self.inv_decay, self.decay_curve);
+        }
+        self.sustain
     }
-    if t < hold_end {
-        return 1.0;
+
+    #[inline]
+    pub fn level_at(&self, t: f64) -> f64 {
+        if t < self.gate_sec {
+            return self.pre_release(t);
+        }
+        if self.inv_release == 0.0 {
+            return 0.0;
+        }
+        let r = (t - self.gate_sec) * self.inv_release;
+        if r >= 1.0 {
+            return 0.0;
+        }
+        self.level_at_gate * (1.0 - shape_curve(r, self.release_curve))
     }
-    if t < decay_end {
-        return 1.0 - (1.0 - env.sustain) * shape_curve((t - hold_end) / decay, env.decay_curve);
-    }
-    env.sustain
 }
 
 pub fn envelope_level(env: &Envelope, t: f64, gate_sec: f64) -> f64 {
-    if t < gate_sec {
-        return pre_release_level(env, t);
-    }
-    let release = env.release_ms / 1000.0;
-    if release <= 0.0 {
-        return 0.0;
-    }
-    let r = (t - gate_sec) / release;
-    if r >= 1.0 {
-        return 0.0;
-    }
-    pre_release_level(env, gate_sec) * (1.0 - shape_curve(r, env.release_curve))
+    EnvShape::new(env, gate_sec).level_at(t)
 }
 
 #[cfg(test)]

@@ -103,7 +103,7 @@ pub fn TopBar() -> impl IntoView {
                 <button
                     class="perfbtn"
                     class=("perfbtn--on", move || s.performance_mode.get())
-                    title="高パフォーマンスモード — プレビューと再生を軽量・高速にレンダリング（線形補間・フィルター/グラニュラー簡略化）。書き出しは常に高音質。"
+                    title="高パフォーマンスモード — プレビューと再生を軽量・高速にレンダリング（32kHz・線形補間・フィルター/グラニュラー簡略化）。書き出しは常に高音質。"
                     on:click=move |_| {
                         let on = s.performance_mode.get_untracked();
                         s.set_performance_mode(!on);
