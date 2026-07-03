@@ -28,8 +28,24 @@ const SHAPE_OPTIONS: [(&str, &str); 4] = [
     ("saw", "ノコギリ"),
 ];
 
+/// スケール試聴チップ: 基準ピッチからの相対半音数。
+const PREVIEW_OFFSETS: [(i32, &str); 7] = [
+    (-12, "-12"),
+    (-7, "-7"),
+    (-5, "-5"),
+    (0, "基準"),
+    (5, "+5"),
+    (7, "+7"),
+    (12, "+12"),
+];
+
 fn ms(v: f64) -> String {
     format!("{} ms", v as i64)
+}
+
+/// トリム/ループ範囲の最小幅。開始と終了が重なって無音になるのを防ぐ。
+fn region_gap(duration: f64) -> f64 {
+    (duration * 0.002).max(0.001)
 }
 
 #[component]
@@ -169,6 +185,25 @@ pub fn SampleInspector() -> impl IntoView {
                     })
                 };
 
+                let region_target = RwSignal::new("trim");
+                let id_drag = id.clone();
+                let on_wave_select = Callback::new(move |(a, b): (f64, f64)| {
+                    let start = a * duration;
+                    let end = b * duration;
+                    let target = region_target.get_untracked();
+                    s.update_sample(&id_drag, move |x| {
+                        if target == "loop" {
+                            x.loop_region.enabled = true;
+                            x.loop_region.start_sec = start;
+                            x.loop_region.end_sec = end;
+                        } else {
+                            x.trim.enabled = true;
+                            x.trim.start_sec = start;
+                            x.trim.end_sec = end;
+                        }
+                    });
+                });
+
                 let id_name = id.clone();
                 let id_name2 = id.clone();
                 let id_preview = id.clone();
@@ -233,7 +268,27 @@ pub fn SampleInspector() -> impl IntoView {
                                 trim=trim_sig
                                 color="#ffb27a".to_string()
                                 height=96.0
+                                on_select=on_wave_select
                             />
+                        </div>
+                        <div class="loopeditor__seltarget">
+                            <span class="panel__muted small">"波形をドラッグして範囲指定:"</span>
+                            <div class="chips chips--inline">
+                                <button
+                                    class="chip chip--mini"
+                                    class:chip--active=move || region_target.get() == "trim"
+                                    on:click=move |_| region_target.set("trim")
+                                >
+                                    "トリム"
+                                </button>
+                                <button
+                                    class="chip chip--mini"
+                                    class:chip--active=move || region_target.get() == "loop"
+                                    on:click=move |_| region_target.set("loop")
+                                >
+                                    "ループ"
+                                </button>
+                            </div>
                         </div>
                         <div class="loopeditor__head">
                             <label class="checkline">
@@ -267,7 +322,14 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.trim.start_sec = v),
+                                supd!(|x, v| {
+                                    let gap = region_gap(duration);
+                                    x.trim.start_sec = v.clamp(0.0, (duration - gap).max(0.0));
+                                    let end_eff = if x.trim.end_sec > 0.0 { x.trim.end_sec } else { duration };
+                                    if end_eff < x.trim.start_sec + gap {
+                                        x.trim.end_sec = (x.trim.start_sec + gap).min(duration);
+                                    }
+                                }),
                             )}
                             {range_row(
                                 "トリム終了",
@@ -276,7 +338,13 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.trim.end_sec = v),
+                                supd!(|x, v| {
+                                    let gap = region_gap(duration);
+                                    x.trim.end_sec = v.clamp(gap, duration);
+                                    if x.trim.end_sec < x.trim.start_sec + gap {
+                                        x.trim.start_sec = (x.trim.end_sec - gap).max(0.0);
+                                    }
+                                }),
                             )}
                         </div>
                         <div class="loopeditor__head loopeditor__head--gap">
@@ -311,7 +379,14 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.loop_region.start_sec = v),
+                                supd!(|x, v| {
+                                    let gap = region_gap(duration);
+                                    x.loop_region.start_sec = v.clamp(0.0, (duration - gap).max(0.0));
+                                    let end_eff = if x.loop_region.end_sec > 0.0 { x.loop_region.end_sec } else { duration };
+                                    if end_eff < x.loop_region.start_sec + gap {
+                                        x.loop_region.end_sec = (x.loop_region.start_sec + gap).min(duration);
+                                    }
+                                }),
                             )}
                             {range_row(
                                 "ループ終了",
@@ -320,7 +395,13 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.loop_region.end_sec = v),
+                                supd!(|x, v| {
+                                    let gap = region_gap(duration);
+                                    x.loop_region.end_sec = v.clamp(gap, duration);
+                                    if x.loop_region.end_sec < x.loop_region.start_sec + gap {
+                                        x.loop_region.start_sec = (x.loop_region.end_sec - gap).max(0.0);
+                                    }
+                                }),
                             )}
                         </div>
                     </div>
@@ -355,6 +436,32 @@ pub fn SampleInspector() -> impl IntoView {
                             |v| format!("{} cent", v as i64),
                             supd!(|x, v| x.tune_cents = v),
                         )}
+                    </div>
+
+                    <div class="loopeditor__seltarget">
+                        <span class="panel__muted small" title="基準ピッチからの半音差で試聴">"スケール試聴:"</span>
+                        <div class="chips chips--inline">
+                            {PREVIEW_OFFSETS
+                                .iter()
+                                .map(|&(off, label)| {
+                                    let id_pv = id.clone();
+                                    view! {
+                                        <button
+                                            class="chip chip--mini"
+                                            title="このピッチで試聴"
+                                            on:click=move |_| {
+                                                if let Some(sm) = s.project.with_untracked(|p| find_sample(p, &id_pv)) {
+                                                    let pitch = (sm.base_pitch + off).clamp(0, 127);
+                                                    s.preview_sample_at(sm, Some(pitch));
+                                                }
+                                            }
+                                        >
+                                            {label}
+                                        </button>
+                                    }
+                                })
+                                .collect_view()}
+                        </div>
                     </div>
 
                     <div class="grid2">

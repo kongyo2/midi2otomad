@@ -24,13 +24,41 @@ fn main() {
 fn install_keyboard(studio: Studio) {
     let Some(win) = web_sys::window() else { return };
     let closure = Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
-        if let Some(target) = ev.target() {
-            if let Ok(el) = target.dyn_into::<web_sys::Element>() {
+        let in_form_control = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .map(|el| {
                 let tag = el.tag_name().to_uppercase();
-                if tag == "INPUT" || tag == "SELECT" || tag == "TEXTAREA" {
-                    return;
+                tag == "INPUT" || tag == "SELECT" || tag == "TEXTAREA"
+            })
+            .unwrap_or(false);
+        let ctrl = ev.ctrl_key() || ev.meta_key();
+        if ctrl {
+            match ev.key().to_ascii_lowercase().as_str() {
+                // テキスト入力中の Ctrl+Z/Y はブラウザ標準のテキスト Undo に任せる
+                "z" | "y" if in_form_control => {}
+                "z" => {
+                    ev.prevent_default();
+                    if ev.shift_key() {
+                        studio.redo();
+                    } else {
+                        studio.undo();
+                    }
                 }
+                "y" => {
+                    ev.prevent_default();
+                    studio.redo();
+                }
+                "s" => {
+                    ev.prevent_default();
+                    studio.save_project();
+                }
+                _ => {}
             }
+            return;
+        }
+        if in_form_control {
+            return;
         }
         if ev.code() == "Space" {
             ev.prevent_default();

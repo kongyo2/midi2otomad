@@ -40,6 +40,18 @@ pub fn context_2d(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d
         .and_then(|o| o.dyn_into::<CanvasRenderingContext2d>().ok())
 }
 
+/// ポインタ位置を要素幅に対する 0.0〜1.0 の割合へ変換する。
+fn pointer_frac(ev: &web_sys::PointerEvent) -> Option<f64> {
+    let el = ev.current_target()?.dyn_into::<web_sys::Element>().ok()?;
+    let rect = el.get_bounding_client_rect();
+    if rect.width() <= 0.0 {
+        return None;
+    }
+    Some(((ev.client_x() as f64 - rect.left()) / rect.width()).clamp(0.0, 1.0))
+}
+
+const MIN_DRAG_FRAC: f64 = 0.002;
+
 #[component]
 pub fn Waveform(
     #[prop(into)] peaks: Signal<Vec<f32>>,
@@ -47,8 +59,12 @@ pub fn Waveform(
     #[prop(into)] trim: Signal<Option<(f64, f64, bool)>>,
     #[prop(into)] color: String,
     height: f64,
+    /// ドラッグで範囲選択したときに (開始, 終了) の割合 (0..1) を通知する。
+    #[prop(optional)]
+    on_select: Option<Callback<(f64, f64)>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    let drag_anchor = StoredValue::new(None::<f64>);
     Effect::new(move |_| {
         let peaks = peaks.get();
         let loop_region = loop_region.get();
@@ -117,5 +133,52 @@ pub fn Waveform(
         }
     });
 
-    view! { <div class="waveform"><canvas node_ref=canvas_ref></canvas></div> }
+    let emit = move |anchor: f64, frac: f64| {
+        if let Some(cb) = on_select {
+            let (a, b) = if frac < anchor {
+                (frac, anchor)
+            } else {
+                (anchor, frac)
+            };
+            if b - a >= MIN_DRAG_FRAC {
+                cb.run((a, b));
+            }
+        }
+    };
+
+    view! {
+        <div
+            class="waveform"
+            class:waveform--editable=on_select.is_some()
+            on:pointerdown=move |ev| {
+                if on_select.is_none() {
+                    return;
+                }
+                if let Some(frac) = pointer_frac(&ev) {
+                    drag_anchor.set_value(Some(frac));
+                    if let Some(el) = ev
+                        .current_target()
+                        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = el.set_pointer_capture(ev.pointer_id());
+                    }
+                }
+            }
+            on:pointermove=move |ev| {
+                let Some(anchor) = drag_anchor.get_value() else { return };
+                if let Some(frac) = pointer_frac(&ev) {
+                    emit(anchor, frac);
+                }
+            }
+            on:pointerup=move |ev| {
+                if let (Some(anchor), Some(frac)) = (drag_anchor.get_value(), pointer_frac(&ev)) {
+                    emit(anchor, frac);
+                }
+                drag_anchor.set_value(None);
+            }
+            on:pointercancel=move |_| drag_anchor.set_value(None)
+        >
+            <canvas node_ref=canvas_ref></canvas>
+        </div>
+    }
 }

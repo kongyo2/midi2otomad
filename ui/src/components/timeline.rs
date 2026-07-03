@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use midi2otomad_core::schema::Track;
+use midi2otomad_core::schema::{Project, Track};
 use wasm_bindgen::JsCast;
 
 use crate::format::format_time;
@@ -10,6 +10,62 @@ use crate::widgets::context_2d;
 const HEADER_WIDTH: f64 = 200.0;
 const ROW_HEIGHT: f64 = 96.0;
 const MAX_CANVAS_WIDTH: f64 = 30000.0;
+/// 小節グリッドの上限。異常に長い曲でも描画量を抑える。
+const MAX_BARS: usize = 2000;
+/// 小節線同士がこの間隔 (px) より詰まる場合は間引く。
+const MIN_BAR_SPACING_PX: f64 = 18.0;
+
+/// テンポマップから小節頭 (4/4 想定) の時刻一覧を求める。
+fn bar_starts(project: &Project, until_sec: f64) -> Vec<f64> {
+    const BEATS_PER_BAR: usize = 4;
+    let mut tempos: Vec<(f64, f64)> = project
+        .tempos
+        .iter()
+        .filter(|t| t.bpm > 0.0)
+        .map(|t| (t.time_sec, t.bpm))
+        .collect();
+    if tempos.is_empty() {
+        tempos.push((0.0, project.bpm.max(1.0)));
+    }
+    tempos.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut bars = Vec::new();
+    let mut t = 0.0;
+    let mut beat = 0usize;
+    let mut cursor = 0usize;
+    while t <= until_sec && bars.len() < MAX_BARS {
+        if beat.is_multiple_of(BEATS_PER_BAR) {
+            bars.push(t);
+        }
+        while cursor + 1 < tempos.len() && tempos[cursor + 1].0 <= t + 1e-9 {
+            cursor += 1;
+        }
+        t += 60.0 / tempos[cursor].1.max(1.0);
+        beat += 1;
+    }
+    bars
+}
+
+fn draw_bar_grid(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    bars: &[f64],
+    px_per_sec: f64,
+    canvas_width: f64,
+) {
+    ctx.set_fill_style_str("rgba(255, 238, 210, 0.09)");
+    let mut last_x = f64::NEG_INFINITY;
+    for &bar in bars {
+        let x = bar * px_per_sec;
+        if x > canvas_width {
+            break;
+        }
+        if x - last_x < MIN_BAR_SPACING_PX {
+            continue;
+        }
+        ctx.fill_rect(x, 0.0, 1.0, ROW_HEIGHT);
+        last_x = x;
+    }
+}
 
 fn lane_seek(ev: &web_sys::MouseEvent, px_per_sec: f64, s: Studio) {
     if let Some(target) = ev.current_target() {
@@ -26,6 +82,7 @@ fn draw_piano_roll(
     track: &Track,
     px_per_sec: f64,
     canvas_width: f64,
+    bars: &[f64],
 ) {
     ctx.clear_rect(0.0, 0.0, canvas_width, ROW_HEIGHT);
     if track.notes.is_empty() {
@@ -49,6 +106,8 @@ fn draw_piano_roll(
             ctx.fill_rect(0.0, y, canvas_width, note_h);
         }
     }
+
+    draw_bar_grid(ctx, bars, px_per_sec, canvas_width);
 
     for n in &track.notes {
         let x = n.start_sec * px_per_sec;
@@ -76,6 +135,7 @@ fn TrackRow(
     track_id: String,
     #[prop(into)] px_per_sec: Signal<f64>,
     #[prop(into)] canvas_width: Signal<f64>,
+    #[prop(into)] bars: Signal<Vec<f64>>,
 ) -> impl IntoView {
     let s = expect_context::<Studio>();
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
@@ -91,6 +151,7 @@ fn TrackRow(
         Effect::new(move |_| {
             let width = canvas_width.get();
             let px = px_per_sec.get();
+            let bar_list = bars.get();
             let Some(track) = track_for() else { return };
             let Some(canvas) = canvas_ref.get() else {
                 return;
@@ -98,7 +159,7 @@ fn TrackRow(
             canvas.set_width(width as u32);
             canvas.set_height(ROW_HEIGHT as u32);
             if let Some(ctx) = context_2d(&canvas) {
-                draw_piano_roll(&ctx, &track, px, width);
+                draw_piano_roll(&ctx, &track, px, width, &bar_list);
             }
         });
     }
@@ -236,6 +297,10 @@ pub fn Timeline() -> impl IntoView {
     let s = expect_context::<Studio>();
     let px_requested = RwSignal::new(80.0_f64);
     let duration = Memo::new(move |_| project_duration(&s.project.get()).max(8.0));
+    let bars = Memo::new(move |_| {
+        s.project
+            .with(|p| bar_starts(p, project_duration(p).max(8.0)))
+    });
     let px_per_sec = Memo::new(move |_| {
         px_requested
             .get()
@@ -316,6 +381,7 @@ pub fn Timeline() -> impl IntoView {
                                         track_id=track.id.clone()
                                         px_per_sec=px_per_sec
                                         canvas_width=canvas_width
+                                        bars=bars
                                     />
                                 </For>
                                 <div class="playhead" style:left=move || format!("{}px", playhead_x())></div>

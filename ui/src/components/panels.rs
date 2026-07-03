@@ -32,8 +32,7 @@ pub fn ReverbPanel() -> impl IntoView {
                         title="リバーブのパラメータを初期値に戻す（オン/オフは保持）"
                         style:visibility=move || if modified.get() { "visible" } else { "hidden" }
                         on:click=move |_| {
-                            s.project.update(|p| p.reverb = Reverb { enabled: p.reverb.enabled, ..Reverb::default() });
-                            s.mark_dirty();
+                            s.edit(|p| p.reverb = Reverb { enabled: p.reverb.enabled, ..Reverb::default() });
                         }
                     >
                         {icon_rotate_ccw()}
@@ -45,8 +44,7 @@ pub fn ReverbPanel() -> impl IntoView {
                             prop:checked=move || enabled.get()
                             on:change=move |ev| {
                                 let c = event_target_checked(&ev);
-                                s.project.update(|p| p.reverb.enabled = c);
-                                s.mark_dirty();
+                                s.edit(|p| p.reverb.enabled = c);
                             }
                         />
                         "有効"
@@ -57,11 +55,11 @@ pub fn ReverbPanel() -> impl IntoView {
                 "トラックの「リバーブ送り」で各楽器の残響量を調整できます。"
             </p>
             <div class="grid2">
-                {range_row("ルームサイズ", Signal::derive(move || s.project.with(|p| p.reverb.room_size)), 0.0, 1.0, 0.01, pct, move |v| { s.project.update(|p| p.reverb.room_size = v); s.mark_dirty(); })}
-                {range_row("ダンピング", Signal::derive(move || s.project.with(|p| p.reverb.damping)), 0.0, 1.0, 0.01, pct, move |v| { s.project.update(|p| p.reverb.damping = v); s.mark_dirty(); })}
-                {range_row("ステレオ幅", Signal::derive(move || s.project.with(|p| p.reverb.width)), 0.0, 1.0, 0.01, pct, move |v| { s.project.update(|p| p.reverb.width = v); s.mark_dirty(); })}
-                {range_row("ウェット量", Signal::derive(move || s.project.with(|p| p.reverb.wet)), 0.0, 1.0, 0.01, pct, move |v| { s.project.update(|p| p.reverb.wet = v); s.mark_dirty(); })}
-                {range_row("プリディレイ", Signal::derive(move || s.project.with(|p| p.reverb.pre_delay_ms)), 0.0, 500.0, 1.0, |v| format!("{} ms", v as i64), move |v| { s.project.update(|p| p.reverb.pre_delay_ms = v); s.mark_dirty(); })}
+                {range_row("ルームサイズ", Signal::derive(move || s.project.with(|p| p.reverb.room_size)), 0.0, 1.0, 0.01, pct, move |v| s.edit_live(|p| p.reverb.room_size = v))}
+                {range_row("ダンピング", Signal::derive(move || s.project.with(|p| p.reverb.damping)), 0.0, 1.0, 0.01, pct, move |v| s.edit_live(|p| p.reverb.damping = v))}
+                {range_row("ステレオ幅", Signal::derive(move || s.project.with(|p| p.reverb.width)), 0.0, 1.0, 0.01, pct, move |v| s.edit_live(|p| p.reverb.width = v))}
+                {range_row("ウェット量", Signal::derive(move || s.project.with(|p| p.reverb.wet)), 0.0, 1.0, 0.01, pct, move |v| s.edit_live(|p| p.reverb.wet = v))}
+                {range_row("プリディレイ", Signal::derive(move || s.project.with(|p| p.reverb.pre_delay_ms)), 0.0, 500.0, 1.0, |v| format!("{} ms", v as i64), move |v| s.edit_live(|p| p.reverb.pre_delay_ms = v))}
             </div>
         </section>
     }
@@ -86,15 +84,14 @@ pub fn OutputPanel() -> impl IntoView {
                         prop:value=move || s.project.with(|p| p.sample_rate.to_string())
                         on:change=move |ev| {
                             if let Ok(v) = event_target_value(&ev).parse::<i32>() {
-                                s.project.update(|p| p.sample_rate = v);
-                                s.mark_dirty();
+                                s.edit(|p| p.sample_rate = v);
                             }
                         }
                     >
                         {SAMPLE_RATES.iter().map(|hz| view! { <option value=hz.to_string()>{format_rate(*hz)}</option> }).collect_view()}
                     </select>
                 </label>
-                {range_row("テール", Signal::derive(move || s.project.with(|p| p.output.tail_sec)), 0.0, 10.0, 0.05, |v| format!("{v:.2} s"), move |v| { s.project.update(|p| p.output.tail_sec = v); s.mark_dirty(); })}
+                {range_row("テール", Signal::derive(move || s.project.with(|p| p.output.tail_sec)), 0.0, 10.0, 0.05, |v| format!("{v:.2} s"), move |v| s.edit_live(|p| p.output.tail_sec = v))}
             </div>
 
             <div class="panel__head">
@@ -105,14 +102,13 @@ pub fn OutputPanel() -> impl IntoView {
                         prop:checked=move || limiter_enabled.get()
                         on:change=move |ev| {
                             let c = event_target_checked(&ev);
-                            s.project.update(|p| p.output.limiter.enabled = c);
-                            s.mark_dirty();
+                            s.edit(|p| p.output.limiter.enabled = c);
                         }
                     />
                     "有効"
                 </label>
             </div>
-            {range_row("スレッショルド", Signal::derive(move || s.project.with(|p| p.output.limiter.threshold)), 0.1, 1.0, 0.01, format_db, move |v| { s.project.update(|p| p.output.limiter.threshold = v); s.mark_dirty(); })}
+            {range_row("スレッショルド", Signal::derive(move || s.project.with(|p| p.output.limiter.threshold)), 0.1, 1.0, 0.01, format_db, move |v| s.edit_live(|p| p.output.limiter.threshold = v))}
         </section>
     }
 }
@@ -123,15 +119,16 @@ pub fn HelpPanel() -> impl IntoView {
         <section class="panel help">
             <h2 class="panel__heading">"ワークフロー"</h2>
             <ol class="help__list">
-                <li><strong>".mid"</strong>" をドラッグ＆ドロップ → トラック / ノート / テンポを解析"</li>
+                <li><strong>".mid"</strong>" をドラッグ＆ドロップ → トラック / ノート / テンポ / サスティンペダルを解析"</li>
                 <li><strong>"音声素材"</strong>"（WAV / MP3）を追加し、トラックに割り当て"</li>
-                <li>"基準ピッチ・DAHDSR エンベロープ・音色フィルター・ダイナミックピッチ・リバーブを調整"</li>
-                <li><strong>"Space"</strong>" で再生、タイムラインのクリックでシーク"</li>
+                <li>"波形をドラッグしてトリム / ループを範囲指定、基準ピッチは自動検出"</li>
+                <li><strong>"Space"</strong>" で再生・ループ再生、タイムラインのクリックでシーク"</li>
+                <li><strong>"Ctrl+Z / Ctrl+Y"</strong>" で元に戻す / やり直し、" <strong>"Ctrl+S"</strong> " でプロジェクト保存 (.m2oproj)"</li>
                 <li>"WAV / MP3 に高音質で書き出し"</li>
             </ol>
             <p class="help__note">
                 {icon_piano()}
-                "ノートの音高は素材の基準ピッチからの差分で再生速度を変えて発音します。再生は3次エルミート補間で高品質に。ベロシティとエクスプレッション(CC11)は音量に反映され、トラック設定の「演奏表現」で音程（ピッチ）と抑揚（強弱）を独立して反映・固定できます。ロングトーンはループ範囲で持続します。フィルターはアンプEG連動スイープと LFO ワブルで時間変化させられます。"
+                "ノートの音高は素材の基準ピッチからの差分で再生速度を変えて発音します。再生は3次エルミート補間で高品質に。ベロシティとエクスプレッション(CC11)は音量に反映され、トラック設定の「演奏表現」で音程（ピッチ）と抑揚（強弱）を独立して反映・固定できます。ロングトーンはループ範囲で持続し、タイムストレッチ方式なら音程と速度を分離できます。フィルターはアンプEG連動スイープと LFO ワブルで時間変化させられます。タイムラインの縦線は小節頭（4/4 想定）です。"
             </p>
         </section>
     }

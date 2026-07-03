@@ -43,6 +43,8 @@ pub struct SampleDto {
     pub id: String,
     pub name: String,
     pub file_name: String,
+    #[serde(default)]
+    pub source_path: String,
     pub duration_sec: f64,
     pub peaks: Vec<f32>,
 }
@@ -60,6 +62,16 @@ pub struct ImportResult {
 pub struct IngestResult {
     pub import: Option<ImportResult>,
     pub samples: Vec<SampleDto>,
+    #[serde(default)]
+    pub loaded: Option<ProjectLoad>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectLoad {
+    pub project: Project,
+    pub samples: Vec<SampleDto>,
+    pub missing: Vec<String>,
 }
 
 #[derive(Deserialize, Clone, Copy, Default)]
@@ -102,11 +114,6 @@ struct ProjectArg<'a> {
 }
 
 #[derive(Serialize)]
-struct IdArg<'a> {
-    id: &'a str,
-}
-
-#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FromSecArg {
     from_sec: Option<f64>,
@@ -121,8 +128,19 @@ struct SecArg {
 #[serde(rename_all = "camelCase")]
 struct PreviewArg<'a> {
     sample: &'a Sample,
+    layers: &'a [Sample],
     pitch: Option<i32>,
     performance: bool,
+}
+
+#[derive(Serialize)]
+struct SaveProjectArg<'a> {
+    project: &'a Project,
+}
+
+#[derive(Serialize)]
+struct EnabledArg {
+    enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -179,10 +197,6 @@ pub async fn ingest_paths(
     .await
 }
 
-pub async fn remove_sample(id: &str) -> Result<(), String> {
-    invoke_void("remove_sample", to_args(&IdArg { id })).await
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DetectArg<'a> {
@@ -195,6 +209,7 @@ pub async fn detect_pitch(sample: &Sample) -> Result<Option<PitchEstimate>, Stri
 
 pub async fn preview_sample(
     sample: &Sample,
+    layers: &[Sample],
     pitch: Option<i32>,
     performance: bool,
 ) -> Result<(), String> {
@@ -202,11 +217,24 @@ pub async fn preview_sample(
         "preview_sample",
         to_args(&PreviewArg {
             sample,
+            layers,
             pitch,
             performance,
         }),
     )
     .await
+}
+
+pub async fn save_project(project: &Project) -> Result<Option<String>, String> {
+    invoke("save_project", to_args(&SaveProjectArg { project })).await
+}
+
+pub async fn load_project() -> Result<Option<ProjectLoad>, String> {
+    invoke("load_project", JsValue::NULL).await
+}
+
+pub async fn set_loop(enabled: bool) -> Result<(), String> {
+    invoke_void("set_loop", to_args(&EnabledArg { enabled })).await
 }
 
 pub async fn set_mix(project: &Project, performance: bool) -> Result<MixSummary, String> {
