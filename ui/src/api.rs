@@ -64,6 +64,8 @@ pub struct IngestResult {
     pub samples: Vec<SampleDto>,
     #[serde(default)]
     pub loaded: Option<ProjectLoad>,
+    #[serde(default)]
+    pub failed: Vec<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -130,6 +132,7 @@ struct PreviewArg<'a> {
     sample: &'a Sample,
     layers: &'a [Sample],
     pitch: Option<i32>,
+    drum_mode: bool,
     performance: bool,
 }
 
@@ -141,6 +144,11 @@ struct SaveProjectArg<'a> {
 #[derive(Serialize)]
 struct EnabledArg {
     enabled: bool,
+}
+
+#[derive(Serialize)]
+struct KeepArg<'a> {
+    keep: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -211,6 +219,7 @@ pub async fn preview_sample(
     sample: &Sample,
     layers: &[Sample],
     pitch: Option<i32>,
+    drum_mode: bool,
     performance: bool,
 ) -> Result<(), String> {
     invoke_void(
@@ -219,6 +228,7 @@ pub async fn preview_sample(
             sample,
             layers,
             pitch,
+            drum_mode,
             performance,
         }),
     )
@@ -235,6 +245,10 @@ pub async fn load_project() -> Result<Option<ProjectLoad>, String> {
 
 pub async fn set_loop(enabled: bool) -> Result<(), String> {
     invoke_void("set_loop", to_args(&EnabledArg { enabled })).await
+}
+
+pub async fn prune_samples(keep: &[String]) -> Result<(), String> {
+    invoke_void("prune_samples", to_args(&KeepArg { keep })).await
 }
 
 pub async fn set_mix(project: &Project, performance: bool) -> Result<MixSummary, String> {

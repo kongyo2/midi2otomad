@@ -63,11 +63,12 @@ pub fn TopBar() -> impl IntoView {
                         class="topbar__name"
                         title="プロジェクト名（保存・書き出しのファイル名になります）"
                         prop:value=move || s.project.with(|p| p.name.clone())
-                        on:change=move |ev| {
+                        on:input=move |ev| {
+                            // Ctrl+S が入力途中でも最新の名前を保存できるよう
+                            // 1 文字ごとに反映する（Undo は自動でまとまる）。
                             let v = event_target_value(&ev);
-                            let trimmed = v.trim().to_string();
-                            if !trimmed.is_empty() {
-                                s.edit(move |p| p.name = trimmed);
+                            if !v.trim().is_empty() {
+                                s.edit_live(move |p| p.name = v);
                             }
                         }
                     />

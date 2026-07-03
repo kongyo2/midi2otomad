@@ -48,6 +48,27 @@ fn region_gap(duration: f64) -> f64 {
     (duration * 0.002).max(0.001)
 }
 
+/// 範囲の開始を動かす。終了が近すぎる場合は終了側を押し出す。
+/// core の resolve_trim / resolve_loop と同じく「終了 <= 開始」は
+/// 「クリップ末尾まで」を意味する規約に合わせる。
+fn push_region_start(start: &mut f64, end: &mut f64, v: f64, duration: f64) {
+    let gap = region_gap(duration);
+    *start = v.clamp(0.0, (duration - gap).max(0.0));
+    let end_eff = if *end > *start { *end } else { duration };
+    if end_eff < *start + gap {
+        *end = (*start + gap).min(duration);
+    }
+}
+
+/// 範囲の終了を動かす。開始が近すぎる場合は開始側を押し出す。
+fn push_region_end(start: &mut f64, end: &mut f64, v: f64, duration: f64) {
+    let gap = region_gap(duration);
+    *end = v.clamp(gap, duration);
+    if *end < *start + gap {
+        *start = (*end - gap).max(0.0);
+    }
+}
+
 #[component]
 pub fn SampleInspector() -> impl IntoView {
     let s = expect_context::<Studio>();
@@ -322,14 +343,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| {
-                                    let gap = region_gap(duration);
-                                    x.trim.start_sec = v.clamp(0.0, (duration - gap).max(0.0));
-                                    let end_eff = if x.trim.end_sec > 0.0 { x.trim.end_sec } else { duration };
-                                    if end_eff < x.trim.start_sec + gap {
-                                        x.trim.end_sec = (x.trim.start_sec + gap).min(duration);
-                                    }
-                                }),
+                                supd!(|x, v| push_region_start(&mut x.trim.start_sec, &mut x.trim.end_sec, v, duration)),
                             )}
                             {range_row(
                                 "トリム終了",
@@ -338,13 +352,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| {
-                                    let gap = region_gap(duration);
-                                    x.trim.end_sec = v.clamp(gap, duration);
-                                    if x.trim.end_sec < x.trim.start_sec + gap {
-                                        x.trim.start_sec = (x.trim.end_sec - gap).max(0.0);
-                                    }
-                                }),
+                                supd!(|x, v| push_region_end(&mut x.trim.start_sec, &mut x.trim.end_sec, v, duration)),
                             )}
                         </div>
                         <div class="loopeditor__head loopeditor__head--gap">
@@ -379,14 +387,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| {
-                                    let gap = region_gap(duration);
-                                    x.loop_region.start_sec = v.clamp(0.0, (duration - gap).max(0.0));
-                                    let end_eff = if x.loop_region.end_sec > 0.0 { x.loop_region.end_sec } else { duration };
-                                    if end_eff < x.loop_region.start_sec + gap {
-                                        x.loop_region.end_sec = (x.loop_region.start_sec + gap).min(duration);
-                                    }
-                                }),
+                                supd!(|x, v| push_region_start(&mut x.loop_region.start_sec, &mut x.loop_region.end_sec, v, duration)),
                             )}
                             {range_row(
                                 "ループ終了",
@@ -395,13 +396,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| {
-                                    let gap = region_gap(duration);
-                                    x.loop_region.end_sec = v.clamp(gap, duration);
-                                    if x.loop_region.end_sec < x.loop_region.start_sec + gap {
-                                        x.loop_region.start_sec = (x.loop_region.end_sec - gap).max(0.0);
-                                    }
-                                }),
+                                supd!(|x, v| push_region_end(&mut x.loop_region.start_sec, &mut x.loop_region.end_sec, v, duration)),
                             )}
                         </div>
                     </div>

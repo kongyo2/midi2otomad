@@ -10,7 +10,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use midi2otomad_core::audio::pitch_detect::{calibration_for_hz, detect_fundamental_hz};
 use midi2otomad_core::audio::{
-    build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio, RenderQuality,
+    build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio, RenderQuality, MAX_LAYERS,
 };
 use midi2otomad_core::id::make_id;
 use midi2otomad_core::media::{decode_audio, encode_wav};
@@ -24,8 +24,6 @@ use player::{Player, PlayerStatus};
 const PEAK_BUCKETS: usize = 600;
 const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", "aif", "aiff"];
 const PROJECT_EXTENSION: &str = "m2oproj";
-/// mixer::MAX_LAYERS と同じ上限。プレビューに含めるレイヤー数を抑える。
-const MAX_PREVIEW_LAYERS: usize = 8;
 
 pub struct AppState {
     bank: Mutex<HashMap<String, PcmAudio>>,
@@ -85,6 +83,8 @@ pub struct IngestResult {
     import: Option<ImportResult>,
     samples: Vec<SampleDto>,
     loaded: Option<ProjectLoad>,
+    /// 読み込めなかったファイルのエラー（残りのファイルは処理を続ける）。
+    failed: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -140,7 +140,14 @@ fn is_project_file(path: &std::path::Path) -> bool {
         == Some(PROJECT_EXTENSION)
 }
 
-/// OS のファイル名として使えない文字を除去する（保存/書き出しダイアログの初期名用）。
+/// Windows で拡張子に関係なく無効になる予約デバイス名。
+const RESERVED_FILE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// OS のファイル名として使えない文字・名前を除去する
+/// （保存/書き出しダイアログの初期名用）。
 fn sanitize_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -152,7 +159,11 @@ fn sanitize_file_name(name: &str) -> String {
         .collect();
     let trimmed = cleaned.trim().trim_matches('.').trim();
     if trimmed.is_empty() {
-        "音MAD".to_string()
+        return "音MAD".to_string();
+    }
+    let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if RESERVED_FILE_NAMES.contains(&stem.as_str()) {
+        format!("_{trimmed}")
     } else {
         trimmed.to_string()
     }
@@ -185,8 +196,19 @@ fn decode_and_store(state: &AppState, path: &std::path::Path) -> Result<SampleDt
     })
 }
 
+fn sample_dto(sample: &Sample, pcm: &PcmAudio) -> SampleDto {
+    SampleDto {
+        id: sample.id.clone(),
+        name: sample.name.clone(),
+        file_name: sample.file_name.clone(),
+        source_path: sample.source_path.clone(),
+        duration_sec: pcm.duration_sec(),
+        peaks: build_waveform_peaks(pcm, PEAK_BUCKETS),
+    }
+}
+
 /// プロジェクトファイル (.m2oproj) を読み込み、参照されている音声素材を
-/// `sourcePath` から再デコードしてバンクへ格納する。
+/// バンク（既にデコード済みならそれを再利用）または `sourcePath` から復元する。
 fn load_project_from_path(state: &AppState, path: &std::path::Path) -> Result<ProjectLoad, String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("プロジェクトを読み込めませんでした: {e}"))?;
@@ -202,28 +224,32 @@ fn load_project_from_path(state: &AppState, path: &std::path::Path) -> Result<Pr
             .lock()
             .map_err(|_| "バンクのロックに失敗".to_string())?;
         for sample in &mut project.samples {
-            if sample.source_path.is_empty() {
-                missing.push(sample.name.clone());
-                continue;
-            }
-            let source = std::path::Path::new(&sample.source_path);
-            let decoded = std::fs::read(source)
-                .ok()
-                .and_then(|b| decode_audio(&b).ok());
-            match decoded {
+            // まず元ファイルから読み直す（外部で編集された音声を反映するため）。
+            let fresh = if sample.source_path.is_empty() {
+                None
+            } else {
+                std::fs::read(std::path::Path::new(&sample.source_path))
+                    .ok()
+                    .and_then(|b| decode_audio(&b).ok())
+            };
+            match fresh {
                 Some(pcm) => {
                     sample.duration_sec = pcm.duration_sec();
-                    samples.push(SampleDto {
-                        id: sample.id.clone(),
-                        name: sample.name.clone(),
-                        file_name: sample.file_name.clone(),
-                        source_path: sample.source_path.clone(),
-                        duration_sec: sample.duration_sec,
-                        peaks: build_waveform_peaks(&pcm, PEAK_BUCKETS),
-                    });
+                    samples.push(sample_dto(sample, &pcm));
                     bank.insert(sample.id.clone(), pcm);
                 }
-                None => missing.push(sample.name.clone()),
+                // 元ファイルが読めなくても、セッション内のデコード結果が
+                // 残っていればそれで復元する（保存後にファイルを移動した
+                // 直後などのフォールバック）。
+                None => {
+                    if let Some(pcm) = bank.get(&sample.id) {
+                        sample.duration_sec = pcm.duration_sec();
+                        samples.push(sample_dto(sample, pcm));
+                        missing.push(format!("{}（メモリ上のデータで継続）", sample.name));
+                    } else {
+                        missing.push(sample.name.clone());
+                    }
+                }
             }
         }
     }
@@ -319,37 +345,53 @@ fn ingest_paths(
             import: None,
             samples: Vec::new(),
             loaded: Some(loaded),
+            failed: Vec::new(),
         });
     }
 
     let import_mode = ImportMode::from_str_or_auto(mode.as_deref().unwrap_or("auto"));
     let mut import = None;
     let mut samples = Vec::new();
+    let mut failed = Vec::new();
+    // 1 つのファイルが壊れていても残りは読み込む。
     for path_str in paths {
         let path = std::path::PathBuf::from(&path_str);
         if is_midi(&path) {
-            if import.is_none() {
-                let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-                let result = midi_to_project_with_mode(
-                    &bytes,
-                    &file_stem_name(&path),
-                    previous.as_ref(),
-                    import_mode,
-                )?;
-                import = Some(ImportResult {
-                    project: result.project,
-                    track_count: result.track_count,
-                    note_count: result.note_count,
+            if import.is_some() {
+                continue;
+            }
+            let imported = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    midi_to_project_with_mode(
+                        &bytes,
+                        &file_stem_name(&path),
+                        previous.as_ref(),
+                        import_mode,
+                    )
                 });
+            match imported {
+                Ok(result) => {
+                    import = Some(ImportResult {
+                        project: result.project,
+                        track_count: result.track_count,
+                        note_count: result.note_count,
+                    });
+                }
+                Err(e) => failed.push(e),
             }
         } else {
-            samples.push(decode_and_store(&state, &path)?);
+            match decode_and_store(&state, &path) {
+                Ok(dto) => samples.push(dto),
+                Err(e) => failed.push(e),
+            }
         }
     }
     Ok(IngestResult {
         import,
         samples,
         loaded: None,
+        failed,
     })
 }
 
@@ -360,7 +402,7 @@ fn save_project(app: AppHandle, project: Project) -> Result<Option<String>, Stri
         .dialog()
         .file()
         .set_file_name(&suggested)
-        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION, "json"])
+        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION])
         .blocking_save_file();
     let Some(target) = picked else {
         return Ok(None);
@@ -376,7 +418,7 @@ fn load_project(app: AppHandle, state: State<AppState>) -> Result<Option<Project
     let picked = app
         .dialog()
         .file()
-        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION, "json"])
+        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION])
         .blocking_pick_file();
     let Some(file) = picked else {
         return Ok(None);
@@ -460,9 +502,11 @@ fn preview_sample(
     mut sample: Sample,
     layers: Option<Vec<Sample>>,
     pitch: Option<i32>,
+    drum_mode: Option<bool>,
     performance: Option<bool>,
 ) -> Result<(), String> {
     let note_pitch = pitch.unwrap_or(sample.base_pitch);
+    let drum_mode = drum_mode.unwrap_or(false);
     let duration = {
         let bank = state
             .bank
@@ -494,11 +538,12 @@ fn preview_sample(
         sample.loop_region.enabled = false;
     }
     // レイヤー先の素材も同梱してプレビューでも重ねて鳴らす。
+    // 上限はミキサーの collect_sources と同じ（ルート込み MAX_LAYERS）。
     let mut sample_values = vec![serde_json::to_value(&sample).map_err(|e| e.to_string())?];
     let mut seen = std::collections::HashSet::new();
     seen.insert(sample.id.clone());
     for layer in layers.unwrap_or_default() {
-        if sample_values.len() > MAX_PREVIEW_LAYERS {
+        if sample_values.len() >= MAX_LAYERS {
             break;
         }
         if seen.insert(layer.id.clone()) {
@@ -514,6 +559,7 @@ fn preview_sample(
             "id": "preview",
             "name": "preview",
             "defaultSampleId": sample.id,
+            "drumMode": drum_mode,
             "notes": [{ "pitch": note_pitch, "startSec": 0, "durationSec": duration, "velocity": 127 }]
         }]
     }))?;
@@ -589,6 +635,16 @@ fn set_loop(state: State<AppState>, enabled: bool) {
     }
 }
 
+/// フロントエンドの Undo 履歴からも参照されなくなった素材をバンクから
+/// 解放する（プロジェクト読込時にフロントが到達可能 ID を渡してくる）。
+#[tauri::command]
+fn prune_samples(state: State<AppState>, keep: Vec<String>) {
+    let keep: std::collections::HashSet<String> = keep.into_iter().collect();
+    if let Ok(mut bank) = state.bank.lock() {
+        bank.retain(|id, _| keep.contains(id));
+    }
+}
+
 #[tauri::command]
 fn status(state: State<AppState>) -> PlayerStatus {
     state
@@ -644,18 +700,14 @@ fn export(
     };
     let path = target.into_path().map_err(|e| e.to_string())?;
 
-    let bit_depth = match request.wav_bit_depth.unwrap_or(24) {
-        16 => 16,
-        32 => 32,
-        _ => 24,
-    };
     let bytes = if ext == "wav" {
+        // ビット深度の正規化は encode_wav が一元的に担う。
         encode_wav(
             mix.sample_rate as u32,
             &mix.left,
             &mix.right,
             mix.frames,
-            bit_depth,
+            request.wav_bit_depth.unwrap_or(24),
         )
     } else {
         encode_mp3_bytes(&mix, request.mp3_bitrate.unwrap_or(320))?
@@ -698,6 +750,7 @@ pub fn run() {
             stop,
             seek,
             set_loop,
+            prune_samples,
             status,
             export
         ])
@@ -753,6 +806,17 @@ mod tests {
         assert_eq!(sanitize_file_name(""), "音MAD");
         assert_eq!(sanitize_file_name("..."), "音MAD");
         assert_eq!(sanitize_file_name("曲名 (final).v2"), "曲名 (final).v2");
+    }
+
+    #[test]
+    fn sanitize_file_name_escapes_windows_reserved_names() {
+        assert_eq!(sanitize_file_name("CON"), "_CON");
+        assert_eq!(sanitize_file_name("con"), "_con");
+        assert_eq!(sanitize_file_name("nul.wav"), "_nul.wav");
+        assert_eq!(sanitize_file_name("COM3"), "_COM3");
+        assert_eq!(sanitize_file_name("LPT9.mid"), "_LPT9.mid");
+        assert_eq!(sanitize_file_name("CONCERT"), "CONCERT");
+        assert_eq!(sanitize_file_name("record"), "record");
     }
 
     #[test]

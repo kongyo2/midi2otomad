@@ -1,11 +1,10 @@
 use leptos::prelude::*;
-use midi2otomad_core::schema::{Project, Track};
-use wasm_bindgen::JsCast;
+use midi2otomad_core::schema::{Tempo, Track};
 
 use crate::format::format_time;
 use crate::icons::{icon_zoom_in, icon_zoom_out};
 use crate::state::{project_duration, Studio};
-use crate::widgets::context_2d;
+use crate::widgets::{context_2d, pointer_offset};
 
 const HEADER_WIDTH: f64 = 200.0;
 const ROW_HEIGHT: f64 = 96.0;
@@ -15,19 +14,26 @@ const MAX_BARS: usize = 2000;
 /// 小節線同士がこの間隔 (px) より詰まる場合は間引く。
 const MIN_BAR_SPACING_PX: f64 = 18.0;
 
+/// MIDI 取り込みが最初のテンポイベントより前に仮定するテンポ
+/// （core::midi::DEFAULT_TEMPO_US = 500,000µs と同じ 120 BPM）。
+const PRELUDE_BPM: f64 = 120.0;
+
 /// テンポマップから小節頭 (4/4 想定) の時刻一覧を求める。
-fn bar_starts(project: &Project, until_sec: f64) -> Vec<f64> {
+/// 拍の途中でテンポが変わる場合も区間ごとに正確に進める。
+fn bar_starts(default_bpm: f64, tempo_map: &[Tempo], until_sec: f64) -> Vec<f64> {
     const BEATS_PER_BAR: usize = 4;
-    let mut tempos: Vec<(f64, f64)> = project
-        .tempos
+    let mut tempos: Vec<(f64, f64)> = tempo_map
         .iter()
         .filter(|t| t.bpm > 0.0)
         .map(|t| (t.time_sec, t.bpm))
         .collect();
     if tempos.is_empty() {
-        tempos.push((0.0, project.bpm.max(1.0)));
+        tempos.push((0.0, default_bpm.max(1.0)));
     }
     tempos.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if tempos[0].0 > 1e-9 {
+        tempos.insert(0, (0.0, PRELUDE_BPM));
+    }
 
     let mut bars = Vec::new();
     let mut t = 0.0;
@@ -37,10 +43,25 @@ fn bar_starts(project: &Project, until_sec: f64) -> Vec<f64> {
         if beat.is_multiple_of(BEATS_PER_BAR) {
             bars.push(t);
         }
-        while cursor + 1 < tempos.len() && tempos[cursor + 1].0 <= t + 1e-9 {
-            cursor += 1;
+        // 1 拍ぶん進める。テンポ境界をまたぐ場合は残り拍数を按分する。
+        let mut remaining_beats = 1.0f64;
+        while remaining_beats > 1e-9 {
+            let sec_per_beat = 60.0 / tempos[cursor].1.max(1.0);
+            let seg_end = if cursor + 1 < tempos.len() {
+                tempos[cursor + 1].0
+            } else {
+                f64::INFINITY
+            };
+            let step = remaining_beats * sec_per_beat;
+            if t + step <= seg_end + 1e-9 {
+                t += step;
+                remaining_beats = 0.0;
+            } else {
+                remaining_beats -= (seg_end - t).max(0.0) / sec_per_beat;
+                t = seg_end;
+                cursor += 1;
+            }
         }
-        t += 60.0 / tempos[cursor].1.max(1.0);
         beat += 1;
     }
     bars
@@ -68,12 +89,8 @@ fn draw_bar_grid(
 }
 
 fn lane_seek(ev: &web_sys::MouseEvent, px_per_sec: f64, s: Studio) {
-    if let Some(target) = ev.current_target() {
-        if let Ok(el) = target.dyn_into::<web_sys::Element>() {
-            let rect = el.get_bounding_client_rect();
-            let x = ev.client_x() as f64 - rect.left();
-            s.seek((x / px_per_sec).max(0.0));
-        }
+    if let Some((x, _)) = pointer_offset(ev) {
+        s.seek((x / px_per_sec).max(0.0));
     }
 }
 
@@ -151,7 +168,6 @@ fn TrackRow(
         Effect::new(move |_| {
             let width = canvas_width.get();
             let px = px_per_sec.get();
-            let bar_list = bars.get();
             let Some(track) = track_for() else { return };
             let Some(canvas) = canvas_ref.get() else {
                 return;
@@ -159,7 +175,7 @@ fn TrackRow(
             canvas.set_width(width as u32);
             canvas.set_height(ROW_HEIGHT as u32);
             if let Some(ctx) = context_2d(&canvas) {
-                draw_piano_roll(&ctx, &track, px, width, &bar_list);
+                bars.with(|bar_list| draw_piano_roll(&ctx, &track, px, width, bar_list));
             }
         });
     }
@@ -297,9 +313,12 @@ pub fn Timeline() -> impl IntoView {
     let s = expect_context::<Studio>();
     let px_requested = RwSignal::new(80.0_f64);
     let duration = Memo::new(move |_| project_duration(&s.project.get()).max(8.0));
+    // テンポ情報だけを切り出して比較を軽くし、無関係な編集（ゲイン等）で
+    // 小節グリッドを再計算しないようにする。
+    let tempo_state = Memo::new(move |_| s.project.with(|p| (p.bpm, p.tempos.clone())));
     let bars = Memo::new(move |_| {
-        s.project
-            .with(|p| bar_starts(p, project_duration(p).max(8.0)))
+        let until = duration.get();
+        tempo_state.with(|(bpm, tempos)| bar_starts(*bpm, tempos, until))
     });
     let px_per_sec = Memo::new(move |_| {
         px_requested

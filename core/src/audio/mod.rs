@@ -14,5 +14,5 @@ pub mod reverb;
 
 pub use mixer::{
     build_waveform_peaks, mix_project, velocity_to_gain, AudioBank, MapBank, MixOptions, MixResult,
-    PcmAudio, RenderQuality,
+    PcmAudio, RenderQuality, MAX_LAYERS,
 };

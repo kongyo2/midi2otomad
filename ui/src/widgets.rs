@@ -40,17 +40,32 @@ pub fn context_2d(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d
         .and_then(|o| o.dyn_into::<CanvasRenderingContext2d>().ok())
 }
 
-/// ポインタ位置を要素幅に対する 0.0〜1.0 の割合へ変換する。
-fn pointer_frac(ev: &web_sys::PointerEvent) -> Option<f64> {
+/// マウス/ポインタ位置を、イベントを受けた要素内のオフセットと要素幅
+/// `(x_px, width_px)` に変換する。
+pub fn pointer_offset(ev: &web_sys::MouseEvent) -> Option<(f64, f64)> {
     let el = ev.current_target()?.dyn_into::<web_sys::Element>().ok()?;
     let rect = el.get_bounding_client_rect();
-    if rect.width() <= 0.0 {
+    Some((ev.client_x() as f64 - rect.left(), rect.width()))
+}
+
+/// ポインタ位置を要素幅に対する 0.0〜1.0 の割合へ変換する。
+fn pointer_frac(ev: &web_sys::PointerEvent) -> Option<f64> {
+    let (x, width) = pointer_offset(ev)?;
+    if width <= 0.0 {
         return None;
     }
-    Some(((ev.client_x() as f64 - rect.left()) / rect.width()).clamp(0.0, 1.0))
+    Some((x / width).clamp(0.0, 1.0))
 }
 
 const MIN_DRAG_FRAC: f64 = 0.002;
+
+fn ordered(anchor: f64, frac: f64) -> (f64, f64) {
+    if frac < anchor {
+        (frac, anchor)
+    } else {
+        (anchor, frac)
+    }
+}
 
 #[component]
 pub fn Waveform(
@@ -60,15 +75,19 @@ pub fn Waveform(
     #[prop(into)] color: String,
     height: f64,
     /// ドラッグで範囲選択したときに (開始, 終了) の割合 (0..1) を通知する。
+    /// ドラッグ中はローカルのハイライトだけを更新し、確定はポインタを
+    /// 離した 1 回のみ（プロジェクト更新と Undo を 1 ステップに抑える）。
     #[prop(optional)]
     on_select: Option<Callback<(f64, f64)>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let drag_anchor = StoredValue::new(None::<f64>);
+    let drag_preview = RwSignal::new(None::<(f64, f64)>);
     Effect::new(move |_| {
         let peaks = peaks.get();
         let loop_region = loop_region.get();
         let trim = trim.get();
+        let preview = drag_preview.get();
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
@@ -131,20 +150,23 @@ pub fn Waveform(
                 ctx.stroke();
             }
         }
-    });
 
-    let emit = move |anchor: f64, frac: f64| {
-        if let Some(cb) = on_select {
-            let (a, b) = if frac < anchor {
-                (frac, anchor)
-            } else {
-                (anchor, frac)
-            };
-            if b - a >= MIN_DRAG_FRAC {
-                cb.run((a, b));
+        // ドラッグ中の選択ハイライト
+        if let Some((a, b)) = preview {
+            let x0 = a * w;
+            let x1 = b * w;
+            ctx.set_fill_style_str("rgba(255,255,255,0.14)");
+            ctx.fill_rect(x0, 0.0, (x1 - x0).max(1.0), height);
+            ctx.set_stroke_style_str("rgba(255,255,255,0.55)");
+            ctx.set_line_width(1.0);
+            for x in [x0, x1] {
+                ctx.begin_path();
+                ctx.move_to(x, 0.0);
+                ctx.line_to(x, height);
+                ctx.stroke();
             }
         }
-    };
+    });
 
     view! {
         <div
@@ -167,16 +189,26 @@ pub fn Waveform(
             on:pointermove=move |ev| {
                 let Some(anchor) = drag_anchor.get_value() else { return };
                 if let Some(frac) = pointer_frac(&ev) {
-                    emit(anchor, frac);
+                    let (a, b) = ordered(anchor, frac);
+                    drag_preview.set(if b - a >= MIN_DRAG_FRAC { Some((a, b)) } else { None });
                 }
             }
             on:pointerup=move |ev| {
-                if let (Some(anchor), Some(frac)) = (drag_anchor.get_value(), pointer_frac(&ev)) {
-                    emit(anchor, frac);
+                if let (Some(cb), Some(anchor), Some(frac)) =
+                    (on_select, drag_anchor.get_value(), pointer_frac(&ev))
+                {
+                    let (a, b) = ordered(anchor, frac);
+                    if b - a >= MIN_DRAG_FRAC {
+                        cb.run((a, b));
+                    }
                 }
                 drag_anchor.set_value(None);
+                drag_preview.set(None);
             }
-            on:pointercancel=move |_| drag_anchor.set_value(None)
+            on:pointercancel=move |_| {
+                drag_anchor.set_value(None);
+                drag_preview.set(None);
+            }
         >
             <canvas node_ref=canvas_ref></canvas>
         </div>

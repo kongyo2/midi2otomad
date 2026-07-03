@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use leptos::prelude::*;
+use midi2otomad_core::audio::MAX_LAYERS;
 use midi2otomad_core::music::midi_to_note_name;
 use midi2otomad_core::schema::{
     create_empty_project, create_sample, Loop, Project, Sample, Track, Trim, DEFAULT_PROJECT_NAME,
@@ -13,8 +14,6 @@ use crate::api::{self, ImportResult, PlayerStatus, ProjectLoad, SampleDto};
 const UNDO_LIMIT: usize = 100;
 /// この時間内の連続編集（スライダードラッグ等）は 1 つの Undo ステップにまとめる。
 const SNAPSHOT_COALESCE_MS: f64 = 400.0;
-/// mixer::MAX_LAYERS と同じ上限。
-const MAX_LAYERS: usize = 8;
 
 #[derive(Clone, Copy)]
 pub struct Studio {
@@ -55,6 +54,7 @@ fn sample_from_dto(dto: &SampleDto) -> Sample {
 }
 
 /// link_ids をたどって重ねる素材を集める（循環・重複は除外）。
+/// ミキサーの collect_sources と同じく「ルートを含めて MAX_LAYERS まで」。
 fn collect_layers(project: &Project, root: &Sample) -> Vec<Sample> {
     if root.link_ids.is_empty() {
         return Vec::new();
@@ -64,7 +64,7 @@ fn collect_layers(project: &Project, root: &Sample) -> Vec<Sample> {
     visited.insert(root.id.clone());
     let mut queue: VecDeque<String> = root.link_ids.iter().cloned().collect();
     while let Some(id) = queue.pop_front() {
-        if out.len() >= MAX_LAYERS {
+        if out.len() + 1 >= MAX_LAYERS {
             break;
         }
         if !visited.insert(id.clone()) {
@@ -122,13 +122,18 @@ impl Studio {
     }
 
     /// 現在の状態を Undo スタックへ積む。`coalesce` はスライダードラッグ等の
-    /// 連続編集を 1 ステップにまとめるためのフラグ。
+    /// 連続編集を 1 ステップにまとめるためのフラグ。まとめるのは連続する
+    /// ライブ編集同士だけで、離散編集 (edit) を巻き込まない。
     fn push_undo(&self, coalesce: bool) {
-        let now = js_sys::Date::now();
-        let last = self.last_snapshot_ms.get_untracked();
-        self.last_snapshot_ms.set(now);
-        if coalesce && now - last < SNAPSHOT_COALESCE_MS {
-            return;
+        if coalesce {
+            let now = js_sys::Date::now();
+            let last = self.last_snapshot_ms.get_untracked();
+            self.last_snapshot_ms.set(now);
+            if now - last < SNAPSHOT_COALESCE_MS {
+                return;
+            }
+        } else {
+            self.last_snapshot_ms.set(f64::NEG_INFINITY);
         }
         let snapshot = self.snapshot();
         self.undo_stack.update(|stack| {
@@ -180,6 +185,7 @@ impl Studio {
 
     fn apply_import(&self, import: ImportResult) {
         self.push_undo(false);
+        self.stop();
         let first_track = import.project.tracks.first().map(|t| t.id.clone());
         self.project.set(import.project);
         self.selected_track.set(first_track);
@@ -191,6 +197,12 @@ impl Studio {
     }
 
     fn apply_samples(&self, samples: Vec<SampleDto>) {
+        self.apply_samples_inner(samples, true);
+    }
+
+    /// `record_undo = false` は、直前の apply_import と同じ Undo ステップに
+    /// まとめる場合（1 回のドロップで MIDI と音声を同時に読み込むケース）。
+    fn apply_samples_inner(&self, samples: Vec<SampleDto>, record_undo: bool) {
         if samples.is_empty() {
             return;
         }
@@ -201,7 +213,7 @@ impl Studio {
                 map.insert(dto.id.clone(), dto.peaks.clone());
             }
         });
-        self.edit(|p| {
+        let mutate = |p: &mut Project| {
             for dto in &samples {
                 let assign = p.samples.is_empty();
                 let sample = sample_from_dto(dto);
@@ -215,13 +227,21 @@ impl Studio {
                     }
                 }
             }
-        });
+        };
+        if record_undo {
+            self.edit(mutate);
+        } else {
+            self.project.update(mutate);
+            self.mark_dirty();
+        }
         self.selected_sample.set(Some(first_id));
         self.show_toast(format!("{count} 個の音声素材を追加しました"));
     }
 
     fn apply_loaded(&self, load: ProjectLoad) {
         self.push_undo(false);
+        // 旧プロジェクトのミックスが鳴り続けないように止める。
+        self.stop();
         self.peaks.update(|map| {
             for dto in &load.samples {
                 map.insert(dto.id.clone(), dto.peaks.clone());
@@ -234,6 +254,7 @@ impl Studio {
         self.selected_track.set(first_track);
         self.selected_sample.set(first_sample);
         self.mark_dirty();
+        self.prune_bank();
         if load.missing.is_empty() {
             self.show_toast(format!("プロジェクト「{name}」を読み込みました"));
         } else {
@@ -244,8 +265,34 @@ impl Studio {
         }
     }
 
+    /// 現在のプロジェクトと Undo/Redo 履歴のどこからも参照されなくなった
+    /// デコード済み音声をバックエンドのバンクから解放する。
+    /// プロジェクト読込のタイミングで呼び、セッション中のメモリ増加を抑える。
+    fn prune_bank(&self) {
+        let mut keep: HashSet<String> = HashSet::new();
+        let collect = |keep: &mut HashSet<String>, p: &Project| {
+            keep.extend(p.samples.iter().map(|s| s.id.clone()));
+        };
+        self.project.with_untracked(|p| collect(&mut keep, p));
+        self.undo_stack.with_untracked(|stack| {
+            for p in stack {
+                collect(&mut keep, p);
+            }
+        });
+        self.redo_stack.with_untracked(|stack| {
+            for p in stack {
+                collect(&mut keep, p);
+            }
+        });
+        let keep: Vec<String> = keep.into_iter().collect();
+        spawn_local(async move {
+            let _ = api::prune_samples(&keep).await;
+        });
+    }
+
     pub fn new_project(&self) {
         self.push_undo(false);
+        self.stop();
         self.project.set(create_empty_project(DEFAULT_PROJECT_NAME));
         self.selected_track.set(None);
         self.selected_sample.set(None);
@@ -314,10 +361,19 @@ impl Studio {
                     if let Some(loaded) = result.loaded {
                         this.apply_loaded(loaded);
                     } else {
+                        // MIDI と音声を同時にドロップしたときは 1 つの
+                        // Undo ステップにまとめる。
+                        let had_import = result.import.is_some();
                         if let Some(import) = result.import {
                             this.apply_import(import);
                         }
-                        this.apply_samples(result.samples);
+                        this.apply_samples_inner(result.samples, !had_import);
+                    }
+                    if !result.failed.is_empty() {
+                        this.show_toast(format!(
+                            "読み込めなかったファイル: {}",
+                            result.failed.join(" ／ ")
+                        ));
                     }
                 }
                 Err(e) => this.show_toast(format!("読み込みに失敗しました: {e}")),
@@ -463,21 +519,29 @@ impl Studio {
     }
 
     pub fn preview_sample(&self, sample: Sample) {
-        self.preview_sample_at(sample, None);
+        self.preview_with(sample, None, false);
+    }
+
+    pub fn preview_sample_at(&self, sample: Sample, pitch: Option<i32>) {
+        self.preview_with(sample, pitch, false);
     }
 
     /// 素材を指定ピッチで試聴する（レイヤー先も同時に鳴らす）。
-    /// プレビューはプレイヤーのバッファを書き換えるため、次回再生時に
-    /// ミックスを作り直すよう dirty マークを付ける。
-    pub fn preview_sample_at(&self, sample: Sample, pitch: Option<i32>) {
+    /// `drum_mode` はトラックの設定をプレビューにも反映し、レイヤー素材が
+    /// 実再生と同じピッチで鳴るようにする。プレビューはプレイヤーの
+    /// バッファを書き換えるため、次回再生時にミックスを作り直すよう
+    /// dirty マークを付ける。
+    fn preview_with(&self, sample: Sample, pitch: Option<i32>, drum_mode: bool) {
         let this = *self;
         spawn_local(async move {
             let layers = this.project.with_untracked(|p| collect_layers(p, &sample));
             let performance = this.performance_mode.get_untracked();
-            if let Err(e) = api::preview_sample(&sample, &layers, pitch, performance).await {
+            if let Err(e) =
+                api::preview_sample(&sample, &layers, pitch, drum_mode, performance).await
+            {
                 this.show_toast(format!("試聴に失敗しました: {e}"));
             }
-            this.mixed_seq.set(0);
+            this.mark_dirty();
         });
     }
 
@@ -485,16 +549,12 @@ impl Studio {
     pub fn preview_note(&self, track_id: &str, pitch: i32) {
         let resolved = self.project.with_untracked(|p| {
             let track = p.tracks.iter().find(|t| t.id == track_id)?;
-            let sample_id = track
-                .note_sample_map
-                .get(&pitch.to_string())
-                .or(track.default_sample_id.as_ref())?;
+            let sample_id = track.sample_id_for_pitch(pitch)?;
             let sample = p.samples.iter().find(|s| &s.id == sample_id)?.clone();
-            let effective = if track.drum_mode { None } else { Some(pitch) };
-            Some((sample, effective))
+            Some((sample, track.drum_mode))
         });
         match resolved {
-            Some((sample, effective)) => self.preview_sample_at(sample, effective),
+            Some((sample, drum_mode)) => self.preview_with(sample, Some(pitch), drum_mode),
             None => self.show_toast("このノートに割り当てられた素材がありません"),
         }
     }

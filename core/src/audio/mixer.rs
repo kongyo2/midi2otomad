@@ -864,7 +864,8 @@ struct PlannedVoice<'a> {
     end_sec: f64,
 }
 
-const MAX_LAYERS: usize = 8;
+/// 1 ノートで同時に鳴らせる素材数（ルート + レイヤー）の合計上限。
+pub const MAX_LAYERS: usize = 8;
 
 fn collect_sources<'a>(
     root: (&'a Sample, &'a PcmAudio),
@@ -909,10 +910,7 @@ fn resolve_note_source<'a>(
     sample_by_id: &HashMap<&str, &'a Sample>,
     bank: &'a dyn AudioBank,
 ) -> Option<(&'a Sample, &'a PcmAudio)> {
-    let sample_id = track
-        .note_sample_map
-        .get(&note.pitch.to_string())
-        .or(track.default_sample_id.as_ref())?;
+    let sample_id = track.sample_id_for_pitch(note.pitch)?;
     let sample = *sample_by_id.get(sample_id.as_str())?;
     let src = bank.get(sample_id)?;
     if src.frames < 2 {

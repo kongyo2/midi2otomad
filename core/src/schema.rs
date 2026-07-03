@@ -627,6 +627,14 @@ impl Tempo {
 }
 
 impl Track {
+    /// ノート番号に対して発音に使う素材 ID を返す
+    /// （ノート個別の割り当て → トラック既定素材の順）。
+    pub fn sample_id_for_pitch(&self, pitch: i32) -> Option<&String> {
+        self.note_sample_map
+            .get(&pitch.to_string())
+            .or(self.default_sample_id.as_ref())
+    }
+
     fn validate(&self) -> Result<(), String> {
         range("track.gain", self.gain, 0.0, 4.0)?;
         range("track.pan", self.pan, -1.0, 1.0)?;
@@ -1094,6 +1102,34 @@ mod tests {
         ] {
             assert!(parse_project(bad).is_err());
         }
+    }
+
+    #[test]
+    fn sample_id_for_pitch_prefers_note_map_over_default() {
+        let project = parse_project(json!({
+            "version": 1, "name": "x",
+            "tracks": [{
+                "id": "t", "name": "t",
+                "defaultSampleId": "base",
+                "noteSampleMap": { "60": "kick" }
+            }]
+        }))
+        .unwrap();
+        let track = &project.tracks[0];
+        assert_eq!(
+            track.sample_id_for_pitch(60).map(String::as_str),
+            Some("kick")
+        );
+        assert_eq!(
+            track.sample_id_for_pitch(61).map(String::as_str),
+            Some("base")
+        );
+
+        let bare = parse_project(
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t" }] }),
+        )
+        .unwrap();
+        assert_eq!(bare.tracks[0].sample_id_for_pitch(60), None);
     }
 
     #[test]
