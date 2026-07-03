@@ -70,6 +70,9 @@ pub fn decode_audio(bytes: &[u8]) -> Result<PcmAudio, String> {
         channels.push(Vec::new());
     }
     let frames = channels[0].len();
+    if frames < 2 {
+        return Err("音声データが空です（デコードできるサンプルがありません）".to_string());
+    }
     Ok(PcmAudio {
         sample_rate,
         channels,
@@ -131,6 +134,12 @@ mod tests {
         bytes.extend_from_slice(&4u32.to_le_bytes());
         bytes.extend_from_slice(b"WAVE");
         assert!(decode_audio(&bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_frame_audio() {
+        let wav = mono_wav_16(22050, &[]);
+        assert!(decode_audio(&wav).is_err());
     }
 
     #[test]

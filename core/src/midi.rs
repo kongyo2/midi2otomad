@@ -165,6 +165,7 @@ pub fn midi_to_project_with_mode(
             }
         }
     }
+    tempo_changes.sort_by_key(|(tick, _)| *tick);
     let time_map = TimeMap::new(&smf.header.timing, &tempo_changes);
 
     let mut raw_tracks: Vec<RawTrack> = Vec::new();
@@ -176,6 +177,10 @@ pub fn midi_to_project_with_mode(
         let mut expression: Vec<(u64, f64)> = Vec::new();
         let mut active: ActiveNotes = HashMap::new();
         let mut bank_msb: HashMap<u8, u8> = HashMap::new();
+        // サスティンペダル (CC64): 踏まれている間に離鍵されたノートは
+        // ペダルが離されるまで伸ばす。
+        let mut sustain_on: HashMap<u8, bool> = HashMap::new();
+        let mut sustained: HashMap<u8, Vec<RawNote>> = HashMap::new();
 
         for event in track {
             tick += event.delta.as_int() as u64;
@@ -196,9 +201,11 @@ pub fn midi_to_project_with_mode(
                                 is_drum,
                             ));
                         } else {
-                            close_note(
+                            release_note(
                                 &mut active,
                                 &mut notes,
+                                &mut sustained,
+                                &sustain_on,
                                 channel.as_int(),
                                 key.as_int(),
                                 tick,
@@ -206,9 +213,11 @@ pub fn midi_to_project_with_mode(
                         }
                     }
                     MidiMessage::NoteOff { key, .. } => {
-                        close_note(
+                        release_note(
                             &mut active,
                             &mut notes,
+                            &mut sustained,
+                            &sustain_on,
                             channel.as_int(),
                             key.as_int(),
                             tick,
@@ -220,6 +229,19 @@ pub fn midi_to_project_with_mode(
                         }
                         7 => volume.push((tick, value.as_int() as f64 / 127.0)),
                         11 => expression.push((tick, value.as_int() as f64 / 127.0)),
+                        64 => {
+                            let ch = channel.as_int();
+                            let on = value.as_int() >= 64;
+                            let was = sustain_on.insert(ch, on).unwrap_or(false);
+                            if was && !on {
+                                if let Some(held) = sustained.remove(&ch) {
+                                    for mut note in held {
+                                        note.end_tick = tick;
+                                        notes.push(note);
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     },
                     _ => {}
@@ -227,6 +249,15 @@ pub fn midi_to_project_with_mode(
                 _ => {}
             }
         }
+
+        // トラック終端までペダルが踏まれたままのノートは終端まで伸ばす。
+        for (_, held) in sustained {
+            for mut note in held {
+                note.end_tick = note.end_tick.max(tick);
+                notes.push(note);
+            }
+        }
+        notes.sort_by(|a, b| a.start_tick.cmp(&b.start_tick).then(a.pitch.cmp(&b.pitch)));
 
         if !notes.is_empty() {
             let all_drum = notes.iter().all(|n| n.is_drum);
@@ -380,8 +411,7 @@ pub fn midi_to_project_with_mode(
         })
         .collect();
     let first_bpm = tempo_changes
-        .iter()
-        .min_by_key(|(tick, _)| *tick)
+        .first()
         .map(|&(_, us)| 60_000_000.0 / us as f64);
 
     let track_count = tracks.len();
@@ -416,24 +446,33 @@ pub fn midi_to_project_with_mode(
     })
 }
 
-fn close_note(
+fn release_note(
     active: &mut ActiveNotes,
     notes: &mut Vec<RawNote>,
+    sustained: &mut HashMap<u8, Vec<RawNote>>,
+    sustain_on: &HashMap<u8, bool>,
     channel: u8,
     key: u8,
     end_tick: u64,
 ) {
-    if let Some(stack) = active.get_mut(&(channel, key)) {
-        if !stack.is_empty() {
-            let (start_tick, velocity, is_drum) = stack.remove(0);
-            notes.push(RawNote {
-                pitch: key as i32,
-                start_tick,
-                end_tick,
-                velocity: velocity as i32,
-                is_drum,
-            });
-        }
+    let Some(stack) = active.get_mut(&(channel, key)) else {
+        return;
+    };
+    if stack.is_empty() {
+        return;
+    }
+    let (start_tick, velocity, is_drum) = stack.remove(0);
+    let note = RawNote {
+        pitch: key as i32,
+        start_tick,
+        end_tick,
+        velocity: velocity as i32,
+        is_drum,
+    };
+    if sustain_on.get(&channel).copied().unwrap_or(false) {
+        sustained.entry(channel).or_default().push(note);
+    } else {
+        notes.push(note);
     }
 }
 
@@ -912,6 +951,102 @@ mod tests {
         let forced_normal =
             midi_to_project_with_mode(&gm_drum, "x.mid", None, ImportMode::Normal).unwrap();
         assert!(!forced_normal.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn sustain_pedal_extends_notes_to_pedal_release() {
+        // ペダルON → ノート(480tick) → ノートOFF → 960tick後にペダルOFF
+        let events = vec![
+            controller(0, 0, 64, 127),
+            note_on(0, 60, 100),
+            note_off(480, 60),
+            controller(960, 0, 64, 0),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let note = &result.project.tracks[0].notes[0];
+        // 480tick=0.5s のノートがペダル解放 (1440tick=1.5s) まで伸びる
+        assert!(
+            (note.duration_sec - 1.5).abs() < 1e-3,
+            "duration {}",
+            note.duration_sec
+        );
+    }
+
+    #[test]
+    fn sustain_pedal_off_before_note_release_has_no_effect() {
+        let events = vec![
+            controller(0, 0, 64, 127),
+            controller(0, 0, 64, 0),
+            note_on(0, 60, 100),
+            note_off(480, 60),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let note = &result.project.tracks[0].notes[0];
+        assert!((note.duration_sec - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sustain_pedal_held_to_track_end_extends_to_last_event() {
+        let events = vec![
+            controller(0, 0, 64, 127),
+            note_on(0, 60, 100),
+            note_off(240, 60),
+            note_on(0, 64, 100),
+            note_off(720, 64),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let notes = &result.project.tracks[0].notes;
+        assert_eq!(notes.len(), 2);
+        // 双方とも最終tick (960tick = 1.0s) まで伸びる
+        for n in notes {
+            let end = n.start_sec + n.duration_sec;
+            assert!((end - 1.0).abs() < 1e-3, "end {end}");
+        }
+    }
+
+    #[test]
+    fn sustain_pedal_is_per_channel() {
+        let events = vec![
+            controller(0, 0, 64, 127),
+            note_on_ch(0, 1, 60, 100),
+            note_off_ch(480, 1, 60),
+            controller(480, 0, 64, 0),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        // ch1 のノートは ch0 のペダルの影響を受けない
+        let note = &result.project.tracks[0].notes[0];
+        assert!((note.duration_sec - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn imported_notes_are_sorted_by_start() {
+        // 和音+ずらしたノートで順序を確認
+        let events = vec![
+            note_on(0, 72, 100),
+            note_on(0, 60, 100),
+            note_off(240, 72),
+            note_on(0, 64, 100),
+            note_off(240, 60),
+            note_off(0, 64),
+            end_of_track(),
+        ];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        let notes = &result.project.tracks[0].notes;
+        let mut prev = (f64::NEG_INFINITY, i32::MIN);
+        for n in notes {
+            let cur = (n.start_sec, n.pitch);
+            assert!(
+                cur.0 > prev.0 || (cur.0 == prev.0 && cur.1 >= prev.1),
+                "notes not sorted"
+            );
+            prev = cur;
+        }
+        assert_eq!(notes[0].pitch, 60);
+        assert_eq!(notes[1].pitch, 72);
     }
 
     #[test]
