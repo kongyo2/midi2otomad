@@ -21,22 +21,46 @@ fn main() {
     leptos::mount::mount_to_body(App);
 }
 
+/// テキストを編集するコントロールか（ブラウザ標準のテキスト Undo を持つもの）。
+/// スライダーやチェックボックス等の INPUT は含めない。
+fn is_text_editing(el: &web_sys::Element) -> bool {
+    match el.tag_name().to_uppercase().as_str() {
+        "TEXTAREA" => true,
+        "INPUT" => {
+            let ty = el
+                .get_attribute("type")
+                .unwrap_or_else(|| "text".to_string())
+                .to_ascii_lowercase();
+            matches!(
+                ty.as_str(),
+                "text" | "search" | "url" | "tel" | "email" | "password" | "number"
+            )
+        }
+        _ => false,
+    }
+}
+
 fn install_keyboard(studio: Studio) {
     let Some(win) = web_sys::window() else { return };
     let closure = Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
-        let in_form_control = ev
+        let target_el = ev
             .target()
-            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        let in_form_control = target_el
+            .as_ref()
             .map(|el| {
                 let tag = el.tag_name().to_uppercase();
                 tag == "INPUT" || tag == "SELECT" || tag == "TEXTAREA"
             })
             .unwrap_or(false);
+        let in_text_field = target_el.as_ref().map(is_text_editing).unwrap_or(false);
         let ctrl = ev.ctrl_key() || ev.meta_key();
         if ctrl {
             match ev.key().to_ascii_lowercase().as_str() {
-                // テキスト入力中の Ctrl+Z/Y はブラウザ標準のテキスト Undo に任せる
-                "z" | "y" if in_form_control => {}
+                // テキスト入力中の Ctrl+Z/Y はブラウザ標準のテキスト Undo に任せる。
+                // スライダーやチェックボックスにフォーカスがあるときは
+                // プロジェクトの Undo/Redo を実行する。
+                "z" | "y" if in_text_field => {}
                 "z" => {
                     ev.prevent_default();
                     if ev.shift_key() {

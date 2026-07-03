@@ -44,8 +44,10 @@ fn ms(v: f64) -> String {
 }
 
 /// トリム/ループ範囲の最小幅。開始と終了が重なって無音になるのを防ぐ。
+/// 極端に短いクリップでも `clamp(gap, duration)` が `min > max` に
+/// ならないよう、クリップ長を超えない値に抑える。
 fn region_gap(duration: f64) -> f64 {
-    (duration * 0.002).max(0.001)
+    (duration * 0.002).max(0.001).min(duration.max(0.0))
 }
 
 /// 範囲の開始を動かす。終了が近すぎる場合は終了側を押し出す。
