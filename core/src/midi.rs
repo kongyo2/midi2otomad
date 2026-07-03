@@ -410,9 +410,13 @@ pub fn midi_to_project_with_mode(
             bpm: 60_000_000.0 / us as f64,
         })
         .collect();
+    // テンポイベントが無いファイルは MIDI 既定テンポ (500,000µs = 120 BPM)
+    // でノートを時刻換算しているため、bpm も同じ値にする（小節グリッド等が
+    // 実際のノート位置と一致するように）。
     let first_bpm = tempo_changes
         .first()
-        .map(|&(_, us)| 60_000_000.0 / us as f64);
+        .map(|&(_, us)| 60_000_000.0 / us as f64)
+        .unwrap_or(60_000_000.0 / DEFAULT_TEMPO_US as f64);
 
     let track_count = tracks.len();
     let name = {
@@ -427,7 +431,7 @@ pub fn midi_to_project_with_mode(
     let project = Project {
         version: 1,
         name,
-        bpm: first_bpm.or(previous.map(|p| p.bpm)).unwrap_or(140.0),
+        bpm: first_bpm,
         ppq: time_map.ppq as i32,
         sample_rate: previous.map(|p| p.sample_rate).unwrap_or(48000),
         master_gain: previous.map(|p| p.master_gain).unwrap_or(1.0),
@@ -951,6 +955,28 @@ mod tests {
         let forced_normal =
             midi_to_project_with_mode(&gm_drum, "x.mid", None, ImportMode::Normal).unwrap();
         assert!(!forced_normal.project.tracks[0].drum_mode);
+    }
+
+    #[test]
+    fn no_tempo_events_defaults_to_midi_120_bpm() {
+        // テンポイベントの無いファイル: ノートは 120 BPM 相当で換算される
+        // ので、プロジェクトの bpm も 120 になる（140 や previous の値に
+        // 引きずられない）。
+        let events = vec![note_on(0, 60, 100), note_off(480, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", None).unwrap();
+        assert!((result.project.bpm - 120.0).abs() < 1e-9);
+        assert!(result.project.tempos.is_empty());
+        // 480tick @ ppq480 = 1 拍 = 0.5s @120BPM
+        let note = &result.project.tracks[0].notes[0];
+        assert!((note.duration_sec - 0.5).abs() < 1e-3);
+
+        let previous = crate::schema::parse_project(
+            serde_json::json!({ "version": 1, "name": "prev", "bpm": 175.0 }),
+        )
+        .unwrap();
+        let events = vec![note_on(0, 60, 100), note_off(480, 60), end_of_track()];
+        let result = midi_to_project(&write_smf(events), "x.mid", Some(&previous)).unwrap();
+        assert!((result.project.bpm - 120.0).abs() < 1e-9);
     }
 
     #[test]

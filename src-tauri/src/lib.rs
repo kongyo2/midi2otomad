@@ -260,9 +260,13 @@ fn load_project_from_path(state: &AppState, path: &std::path::Path) -> Result<Pr
     })
 }
 
-fn load_into_player(state: &AppState, mix: &MixResult) {
+/// ミックスをプレイヤーへ載せる。`preview` はループ再生設定を一時的に
+/// 無効化する（短い試聴が無限リピートしないように。次に本編ミックスを
+/// 載せた時点で解除される）。
+fn load_into_player(state: &AppState, mix: &MixResult, preview: bool) {
     if let Some(player) = &state.player {
         player.set_mix(&mix.left, &mix.right, mix.sample_rate);
+        player.set_loop_suppressed(preview);
     }
 }
 
@@ -572,7 +576,7 @@ fn preview_sample(
             target_rate: state.engine_rate(),
         },
     )?;
-    load_into_player(&state, &mix);
+    load_into_player(&state, &mix, true);
     if let Some(player) = &state.player {
         player.play(Some(0.0));
     }
@@ -593,7 +597,7 @@ fn set_mix(
             ..Default::default()
         },
     )?;
-    load_into_player(&state, &mix);
+    load_into_player(&state, &mix, false);
     Ok(MixSummary {
         duration_sec: mix.duration_sec,
         peak: mix.peak,
