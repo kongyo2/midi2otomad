@@ -8,6 +8,10 @@ struct Shared {
     samples: Mutex<Vec<f32>>,
     pos: AtomicUsize,
     playing: AtomicBool,
+    looping: AtomicBool,
+    /// プレビュー再生中はループ設定を一時的に無効化する
+    /// （短い試聴が無限リピートしないように）。
+    loop_suppressed: AtomicBool,
     level: AtomicU32,
 }
 
@@ -36,6 +40,8 @@ impl Player {
             samples: Mutex::new(Vec::new()),
             pos: AtomicUsize::new(0),
             playing: AtomicBool::new(false),
+            looping: AtomicBool::new(false),
+            loop_suppressed: AtomicBool::new(false),
             level: AtomicU32::new(0),
         });
         let shared_for_thread = shared.clone();
@@ -106,6 +112,17 @@ impl Player {
 
     pub fn pause(&self) {
         self.shared.playing.store(false, Ordering::Release);
+    }
+
+    pub fn set_looping(&self, on: bool) {
+        self.shared.looping.store(on, Ordering::Release);
+    }
+
+    /// バッファ内容に応じてループを一時停止する（プレビュー時 true）。
+    pub fn set_loop_suppressed(&self, suppressed: bool) {
+        self.shared
+            .loop_suppressed
+            .store(suppressed, Ordering::Release);
     }
 
     pub fn stop(&self) {
@@ -197,41 +214,48 @@ where
                 let frame_len = samples.len() / 2;
                 let mut peak = 0.0f32;
                 for frame in out.chunks_mut(channels.max(1)) {
-                    if shared.playing.load(Ordering::Acquire) {
-                        let pos = shared.pos.load(Ordering::Acquire);
-                        if pos < frame_len {
-                            let l = samples[pos * 2];
-                            let r = samples[pos * 2 + 1];
-                            peak = peak.max(l.abs()).max(r.abs());
-                            for (i, s) in frame.iter_mut().enumerate() {
-                                let v = if channels == 1 {
-                                    (l + r) * 0.5
-                                } else if i == 0 {
-                                    l
-                                } else if i == 1 {
-                                    r
-                                } else {
-                                    0.0
-                                };
-                                *s = T::from_sample(v);
-                            }
-                            let _ = shared.pos.compare_exchange(
-                                pos,
-                                pos + 1,
-                                Ordering::Release,
-                                Ordering::Relaxed,
-                            );
+                    if !shared.playing.load(Ordering::Acquire) {
+                        for s in frame.iter_mut() {
+                            *s = silence;
+                        }
+                        continue;
+                    }
+                    let mut pos = shared.pos.load(Ordering::Acquire);
+                    if pos >= frame_len {
+                        let loop_now = shared.looping.load(Ordering::Acquire)
+                            && !shared.loop_suppressed.load(Ordering::Acquire);
+                        if frame_len > 0 && loop_now {
+                            pos = 0;
+                            shared.pos.store(0, Ordering::Release);
                         } else {
                             shared.playing.store(false, Ordering::Release);
                             for s in frame.iter_mut() {
                                 *s = silence;
                             }
-                        }
-                    } else {
-                        for s in frame.iter_mut() {
-                            *s = silence;
+                            continue;
                         }
                     }
+                    let l = samples[pos * 2];
+                    let r = samples[pos * 2 + 1];
+                    peak = peak.max(l.abs()).max(r.abs());
+                    for (i, s) in frame.iter_mut().enumerate() {
+                        let v = if channels == 1 {
+                            (l + r) * 0.5
+                        } else if i == 0 {
+                            l
+                        } else if i == 1 {
+                            r
+                        } else {
+                            0.0
+                        };
+                        *s = T::from_sample(v);
+                    }
+                    let _ = shared.pos.compare_exchange(
+                        pos,
+                        pos + 1,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    );
                 }
                 let prev = f32::from_bits(shared.level.load(Ordering::Relaxed));
                 let level = peak.max(prev * 0.85);

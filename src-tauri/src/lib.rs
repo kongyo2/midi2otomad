@@ -10,7 +10,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use midi2otomad_core::audio::pitch_detect::{calibration_for_hz, detect_fundamental_hz};
 use midi2otomad_core::audio::{
-    build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio, RenderQuality,
+    build_waveform_peaks, mix_project, MixOptions, MixResult, PcmAudio, RenderQuality, MAX_LAYERS,
 };
 use midi2otomad_core::id::make_id;
 use midi2otomad_core::media::{decode_audio, encode_wav};
@@ -23,6 +23,7 @@ use player::{Player, PlayerStatus};
 
 const PEAK_BUCKETS: usize = 600;
 const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", "aif", "aiff"];
+const PROJECT_EXTENSION: &str = "m2oproj";
 
 pub struct AppState {
     bank: Mutex<HashMap<String, PcmAudio>>,
@@ -63,6 +64,7 @@ pub struct SampleDto {
     id: String,
     name: String,
     file_name: String,
+    source_path: String,
     duration_sec: f64,
     peaks: Vec<f32>,
 }
@@ -80,6 +82,17 @@ pub struct ImportResult {
 pub struct IngestResult {
     import: Option<ImportResult>,
     samples: Vec<SampleDto>,
+    loaded: Option<ProjectLoad>,
+    /// 読み込めなかったファイルのエラー（残りのファイルは処理を続ける）。
+    failed: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectLoad {
+    project: Project,
+    samples: Vec<SampleDto>,
+    missing: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -119,9 +132,47 @@ fn is_midi(path: &std::path::Path) -> bool {
     )
 }
 
+fn is_project_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+        == Some(PROJECT_EXTENSION)
+}
+
+/// Windows で拡張子に関係なく無効になる予約デバイス名。
+const RESERVED_FILE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// OS のファイル名として使えない文字・名前を除去する
+/// （保存/書き出しダイアログの初期名用）。
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        return "音MAD".to_string();
+    }
+    let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if RESERVED_FILE_NAMES.contains(&stem.as_str()) {
+        format!("_{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn decode_and_store(state: &AppState, path: &std::path::Path) -> Result<SampleDto, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let pcm = decode_audio(&bytes)?;
+    let pcm = decode_audio(&bytes)
+        .map_err(|e| format!("{} をデコードできませんでした: {e}", file_stem_name(path)))?;
     let id = make_id("sample");
     let peaks = build_waveform_peaks(&pcm, PEAK_BUCKETS);
     let duration_sec = pcm.duration_sec();
@@ -139,14 +190,83 @@ fn decode_and_store(state: &AppState, path: &std::path::Path) -> Result<SampleDt
         id,
         name,
         file_name,
+        source_path: path.display().to_string(),
         duration_sec,
         peaks,
     })
 }
 
-fn load_into_player(state: &AppState, mix: &MixResult) {
+fn sample_dto(sample: &Sample, pcm: &PcmAudio) -> SampleDto {
+    SampleDto {
+        id: sample.id.clone(),
+        name: sample.name.clone(),
+        file_name: sample.file_name.clone(),
+        source_path: sample.source_path.clone(),
+        duration_sec: pcm.duration_sec(),
+        peaks: build_waveform_peaks(pcm, PEAK_BUCKETS),
+    }
+}
+
+/// プロジェクトファイル (.m2oproj) を読み込み、参照されている音声素材を
+/// バンク（既にデコード済みならそれを再利用）または `sourcePath` から復元する。
+fn load_project_from_path(state: &AppState, path: &std::path::Path) -> Result<ProjectLoad, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("プロジェクトを読み込めませんでした: {e}"))?;
+    let raw: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("プロジェクトの JSON 解析に失敗しました: {e}"))?;
+    let mut project = parse_project(raw)?;
+
+    let mut samples = Vec::new();
+    let mut missing = Vec::new();
+    {
+        let mut bank = state
+            .bank
+            .lock()
+            .map_err(|_| "バンクのロックに失敗".to_string())?;
+        for sample in &mut project.samples {
+            // まず元ファイルから読み直す（外部で編集された音声を反映するため）。
+            let fresh = if sample.source_path.is_empty() {
+                None
+            } else {
+                std::fs::read(std::path::Path::new(&sample.source_path))
+                    .ok()
+                    .and_then(|b| decode_audio(&b).ok())
+            };
+            match fresh {
+                Some(pcm) => {
+                    sample.duration_sec = pcm.duration_sec();
+                    samples.push(sample_dto(sample, &pcm));
+                    bank.insert(sample.id.clone(), pcm);
+                }
+                // 元ファイルが読めなくても、セッション内のデコード結果が
+                // 残っていればそれで復元する（保存後にファイルを移動した
+                // 直後などのフォールバック）。
+                None => {
+                    if let Some(pcm) = bank.get(&sample.id) {
+                        sample.duration_sec = pcm.duration_sec();
+                        samples.push(sample_dto(sample, pcm));
+                        missing.push(format!("{}（メモリ上のデータで継続）", sample.name));
+                    } else {
+                        missing.push(sample.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(ProjectLoad {
+        project,
+        samples,
+        missing,
+    })
+}
+
+/// ミックスをプレイヤーへ載せる。`preview` はループ再生設定を一時的に
+/// 無効化する（短い試聴が無限リピートしないように。次に本編ミックスを
+/// 載せた時点で解除される）。
+fn load_into_player(state: &AppState, mix: &MixResult, preview: bool) {
     if let Some(player) = &state.player {
         player.set_mix(&mix.left, &mix.right, mix.sample_rate);
+        player.set_loop_suppressed(preview);
     }
 }
 
@@ -218,38 +338,97 @@ fn ingest_paths(
     previous: Option<Project>,
     mode: Option<String>,
 ) -> Result<IngestResult, String> {
+    // プロジェクトファイルが含まれていれば、それがすべてを置き換える。
+    if let Some(project_path) = paths
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| is_project_file(p))
+    {
+        let loaded = load_project_from_path(&state, &project_path)?;
+        return Ok(IngestResult {
+            import: None,
+            samples: Vec::new(),
+            loaded: Some(loaded),
+            failed: Vec::new(),
+        });
+    }
+
     let import_mode = ImportMode::from_str_or_auto(mode.as_deref().unwrap_or("auto"));
     let mut import = None;
     let mut samples = Vec::new();
+    let mut failed = Vec::new();
+    // 1 つのファイルが壊れていても残りは読み込む。
     for path_str in paths {
         let path = std::path::PathBuf::from(&path_str);
         if is_midi(&path) {
-            if import.is_none() {
-                let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-                let result = midi_to_project_with_mode(
-                    &bytes,
-                    &file_stem_name(&path),
-                    previous.as_ref(),
-                    import_mode,
-                )?;
-                import = Some(ImportResult {
-                    project: result.project,
-                    track_count: result.track_count,
-                    note_count: result.note_count,
+            if import.is_some() {
+                continue;
+            }
+            let imported = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    midi_to_project_with_mode(
+                        &bytes,
+                        &file_stem_name(&path),
+                        previous.as_ref(),
+                        import_mode,
+                    )
                 });
+            match imported {
+                Ok(result) => {
+                    import = Some(ImportResult {
+                        project: result.project,
+                        track_count: result.track_count,
+                        note_count: result.note_count,
+                    });
+                }
+                Err(e) => failed.push(e),
             }
         } else {
-            samples.push(decode_and_store(&state, &path)?);
+            match decode_and_store(&state, &path) {
+                Ok(dto) => samples.push(dto),
+                Err(e) => failed.push(e),
+            }
         }
     }
-    Ok(IngestResult { import, samples })
+    Ok(IngestResult {
+        import,
+        samples,
+        loaded: None,
+        failed,
+    })
 }
 
 #[tauri::command]
-fn remove_sample(state: State<AppState>, id: String) {
-    if let Ok(mut bank) = state.bank.lock() {
-        bank.remove(&id);
-    }
+fn save_project(app: AppHandle, project: Project) -> Result<Option<String>, String> {
+    let suggested = format!("{}.{PROJECT_EXTENSION}", sanitize_file_name(&project.name));
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested)
+        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION])
+        .blocking_save_file();
+    let Some(target) = picked else {
+        return Ok(None);
+    };
+    let path = target.into_path().map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("保存に失敗しました: {e}"))?;
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+fn load_project(app: AppHandle, state: State<AppState>) -> Result<Option<ProjectLoad>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION])
+        .blocking_pick_file();
+    let Some(file) = picked else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    load_project_from_path(&state, &path).map(Some)
 }
 
 #[derive(Serialize)]
@@ -325,10 +504,13 @@ fn quality_for(performance: bool) -> RenderQuality {
 fn preview_sample(
     state: State<AppState>,
     mut sample: Sample,
+    layers: Option<Vec<Sample>>,
     pitch: Option<i32>,
+    drum_mode: Option<bool>,
     performance: Option<bool>,
 ) -> Result<(), String> {
     let note_pitch = pitch.unwrap_or(sample.base_pitch);
+    let drum_mode = drum_mode.unwrap_or(false);
     let duration = {
         let bank = state
             .bank
@@ -359,16 +541,29 @@ fn preview_sample(
         sample.one_shot = false;
         sample.loop_region.enabled = false;
     }
-    let sample_value = serde_json::to_value(&sample).map_err(|e| e.to_string())?;
+    // レイヤー先の素材も同梱してプレビューでも重ねて鳴らす。
+    // 上限はミキサーの collect_sources と同じ（ルート込み MAX_LAYERS）。
+    let mut sample_values = vec![serde_json::to_value(&sample).map_err(|e| e.to_string())?];
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(sample.id.clone());
+    for layer in layers.unwrap_or_default() {
+        if sample_values.len() >= MAX_LAYERS {
+            break;
+        }
+        if seen.insert(layer.id.clone()) {
+            sample_values.push(serde_json::to_value(&layer).map_err(|e| e.to_string())?);
+        }
+    }
     let project = parse_project(json!({
         "version": 1,
         "name": "preview",
         "sampleRate": 48000,
-        "samples": [sample_value],
+        "samples": sample_values,
         "tracks": [{
             "id": "preview",
             "name": "preview",
             "defaultSampleId": sample.id,
+            "drumMode": drum_mode,
             "notes": [{ "pitch": note_pitch, "startSec": 0, "durationSec": duration, "velocity": 127 }]
         }]
     }))?;
@@ -381,7 +576,7 @@ fn preview_sample(
             target_rate: state.engine_rate(),
         },
     )?;
-    load_into_player(&state, &mix);
+    load_into_player(&state, &mix, true);
     if let Some(player) = &state.player {
         player.play(Some(0.0));
     }
@@ -402,7 +597,7 @@ fn set_mix(
             ..Default::default()
         },
     )?;
-    load_into_player(&state, &mix);
+    load_into_player(&state, &mix, false);
     Ok(MixSummary {
         duration_sec: mix.duration_sec,
         peak: mix.peak,
@@ -434,6 +629,23 @@ fn stop(state: State<AppState>) {
 fn seek(state: State<AppState>, sec: f64) {
     if let Some(player) = &state.player {
         player.seek(sec);
+    }
+}
+
+#[tauri::command]
+fn set_loop(state: State<AppState>, enabled: bool) {
+    if let Some(player) = &state.player {
+        player.set_looping(enabled);
+    }
+}
+
+/// フロントエンドの Undo 履歴からも参照されなくなった素材をバンクから
+/// 解放する（プロジェクト読込時にフロントが到達可能 ID を渡してくる）。
+#[tauri::command]
+fn prune_samples(state: State<AppState>, keep: Vec<String>) {
+    let keep: std::collections::HashSet<String> = keep.into_iter().collect();
+    if let Ok(mut bank) = state.bank.lock() {
+        bank.retain(|id, _| keep.contains(id));
     }
 }
 
@@ -475,15 +687,11 @@ fn export(
     } else {
         "wav"
     };
-    let suggested = if request
-        .project
-        .name
-        .to_lowercase()
-        .ends_with(&format!(".{ext}"))
-    {
-        request.project.name.clone()
+    let base = sanitize_file_name(&request.project.name);
+    let suggested = if base.to_lowercase().ends_with(&format!(".{ext}")) {
+        base
     } else {
-        format!("{}.{ext}", request.project.name)
+        format!("{base}.{ext}")
     };
     let picked = app
         .dialog()
@@ -497,6 +705,7 @@ fn export(
     let path = target.into_path().map_err(|e| e.to_string())?;
 
     let bytes = if ext == "wav" {
+        // ビット深度の正規化は encode_wav が一元的に担う。
         encode_wav(
             mix.sample_rate as u32,
             &mix.left,
@@ -535,7 +744,8 @@ pub fn run() {
             open_midi,
             open_audio,
             ingest_paths,
-            remove_sample,
+            save_project,
+            load_project,
             detect_pitch,
             preview_sample,
             set_mix,
@@ -543,6 +753,8 @@ pub fn run() {
             pause,
             stop,
             seek,
+            set_loop,
+            prune_samples,
             status,
             export
         ])
@@ -577,6 +789,38 @@ mod tests {
         assert!(!is_midi(Path::new("song.mp3")));
         assert!(!is_midi(Path::new("song")));
         assert!(!is_midi(Path::new("midi")));
+    }
+
+    #[test]
+    fn is_project_file_matches_extension() {
+        assert!(is_project_file(Path::new("song.m2oproj")));
+        assert!(is_project_file(Path::new("/a/b/Song.M2OPROJ")));
+        assert!(!is_project_file(Path::new("song.json")));
+        assert!(!is_project_file(Path::new("song.mid")));
+    }
+
+    #[test]
+    fn sanitize_file_name_strips_invalid_characters() {
+        assert_eq!(sanitize_file_name("my song"), "my song");
+        assert_eq!(
+            sanitize_file_name("a/b\\c:d*e?f\"g<h>i|j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+        assert_eq!(sanitize_file_name("  .hidden.  "), "hidden");
+        assert_eq!(sanitize_file_name(""), "音MAD");
+        assert_eq!(sanitize_file_name("..."), "音MAD");
+        assert_eq!(sanitize_file_name("曲名 (final).v2"), "曲名 (final).v2");
+    }
+
+    #[test]
+    fn sanitize_file_name_escapes_windows_reserved_names() {
+        assert_eq!(sanitize_file_name("CON"), "_CON");
+        assert_eq!(sanitize_file_name("con"), "_con");
+        assert_eq!(sanitize_file_name("nul.wav"), "_nul.wav");
+        assert_eq!(sanitize_file_name("COM3"), "_COM3");
+        assert_eq!(sanitize_file_name("LPT9.mid"), "_LPT9.mid");
+        assert_eq!(sanitize_file_name("CONCERT"), "CONCERT");
+        assert_eq!(sanitize_file_name("record"), "record");
     }
 
     #[test]

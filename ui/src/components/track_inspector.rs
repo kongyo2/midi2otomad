@@ -4,7 +4,7 @@ use midi2otomad_core::schema::{StopMode, VoicePriority};
 
 use crate::enums::SelectValue;
 use crate::format::{format_db, pct};
-use crate::icons::{icon_music, icon_sliders};
+use crate::icons::{icon_music, icon_play, icon_sliders};
 use crate::state::Studio;
 use crate::widgets::range_row;
 
@@ -289,10 +289,18 @@ pub fn TrackInspector() -> impl IntoView {
                                     .map(|pitch| {
                                         let id_row = id.clone();
                                         let id_assigned = id.clone();
+                                        let id_preview = id.clone();
                                         let assigned = Signal::derive(move || s.project.with(|p| p.tracks.iter().find(|t| t.id == id_assigned).and_then(|t| t.note_sample_map.get(&pitch.to_string()).cloned()).unwrap_or_default()));
                                         view! {
                                             <div class="notemap__row" class:notemap__row--override=move || !assigned.get().is_empty()>
                                                 <span class="notemap__pitch">{midi_to_note_name(pitch as f64)}</span>
+                                                <button
+                                                    class="iconbtn iconbtn--xs"
+                                                    title="この音高で割り当て素材を試聴"
+                                                    on:click=move |_| s.preview_note(&id_preview, pitch)
+                                                >
+                                                    {icon_play()}
+                                                </button>
                                                 <select
                                                     class="select select--mini"
                                                     prop:value=move || assigned.get()

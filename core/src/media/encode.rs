@@ -65,6 +65,13 @@ pub fn encode_wav(
     frames: usize,
     bit_depth: WavBitDepth,
 ) -> Vec<u8> {
+    // 対応するのは 16 / 24 / 32(float) のみ。想定外の値はヘッダと実データが
+    // 食い違った壊れた WAV になるため、ここで正規化する。
+    let bit_depth: WavBitDepth = match bit_depth {
+        24 => 24,
+        32 => 32,
+        _ => 16,
+    };
     let channels: u16 = 2;
     let bytes_per_sample = (bit_depth / 8) as usize;
     let block_align = channels as usize * bytes_per_sample;
@@ -287,6 +294,16 @@ mod tests {
         for r in [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000] {
             assert_eq!(mp3_compatible_rate(r), r);
         }
+    }
+
+    #[test]
+    fn wav_unsupported_bit_depth_falls_back_to_16() {
+        let wav = encode_wav(48000, &[0.5; 4], &[0.5; 4], 4, 8);
+        // ヘッダのビット深度が 16 に正規化される
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16);
+        let data_size = read_u32(&wav, 40) as usize;
+        assert_eq!(data_size, 4 * 2 * 2);
+        assert_eq!(wav.len(), 44 + data_size);
     }
 
     #[test]

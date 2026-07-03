@@ -1480,3 +1480,100 @@ input[type="checkbox"]:checked::after {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ============================================================
+   v0.4 — プロジェクト操作 / Undo / ループ再生 / 波形ドラッグ編集
+   ============================================================ */
+
+.topbar__name {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 1px 5px;
+  margin: 1px 0 0 -6px;
+  width: 172px;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.topbar__name:hover {
+  border-color: var(--border);
+  color: var(--ink-dim);
+}
+.topbar__name:focus {
+  outline: none;
+  border-color: var(--amber);
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.vsep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.iconbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+.iconbtn--xs {
+  width: 21px;
+  height: 21px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.iconbtn--xs .icon {
+  width: 11px;
+  height: 11px;
+}
+
+.transportbtn--active {
+  color: #16210a;
+  background: radial-gradient(120% 120% at 30% 22%, #d6ff63, var(--lime) 60%, #97c52f);
+  border-color: #d8ff70;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 14px -3px var(--lime-glow),
+    0 1px 0 rgba(255, 255, 255, 0.35) inset;
+}
+
+.meter__fill--clip {
+  background: linear-gradient(90deg, var(--red), #ff8577);
+  box-shadow: 0 0 10px -2px var(--red);
+}
+
+.waveform--editable {
+  cursor: crosshair;
+  touch-action: none;
+}
+.waveform--editable canvas {
+  pointer-events: none;
+}
+
+.loopeditor__seltarget {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin: 7px 0 9px;
+}
+.loopeditor__seltarget .small {
+  margin: 0;
+}
+
+.chips--inline {
+  margin: 0;
+  flex-wrap: nowrap;
+}
+
+.chip--mini {
+  padding: 2px 9px;
+  font-size: 10.5px;
+}

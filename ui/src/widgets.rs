@@ -40,6 +40,33 @@ pub fn context_2d(canvas: &HtmlCanvasElement) -> Option<CanvasRenderingContext2d
         .and_then(|o| o.dyn_into::<CanvasRenderingContext2d>().ok())
 }
 
+/// マウス/ポインタ位置を、イベントを受けた要素内のオフセットと要素幅
+/// `(x_px, width_px)` に変換する。
+pub fn pointer_offset(ev: &web_sys::MouseEvent) -> Option<(f64, f64)> {
+    let el = ev.current_target()?.dyn_into::<web_sys::Element>().ok()?;
+    let rect = el.get_bounding_client_rect();
+    Some((ev.client_x() as f64 - rect.left(), rect.width()))
+}
+
+/// ポインタ位置を要素幅に対する 0.0〜1.0 の割合へ変換する。
+fn pointer_frac(ev: &web_sys::PointerEvent) -> Option<f64> {
+    let (x, width) = pointer_offset(ev)?;
+    if width <= 0.0 {
+        return None;
+    }
+    Some((x / width).clamp(0.0, 1.0))
+}
+
+const MIN_DRAG_FRAC: f64 = 0.002;
+
+fn ordered(anchor: f64, frac: f64) -> (f64, f64) {
+    if frac < anchor {
+        (frac, anchor)
+    } else {
+        (anchor, frac)
+    }
+}
+
 #[component]
 pub fn Waveform(
     #[prop(into)] peaks: Signal<Vec<f32>>,
@@ -47,12 +74,20 @@ pub fn Waveform(
     #[prop(into)] trim: Signal<Option<(f64, f64, bool)>>,
     #[prop(into)] color: String,
     height: f64,
+    /// ドラッグで範囲選択したときに (開始, 終了) の割合 (0..1) を通知する。
+    /// ドラッグ中はローカルのハイライトだけを更新し、確定はポインタを
+    /// 離した 1 回のみ（プロジェクト更新と Undo を 1 ステップに抑える）。
+    #[prop(optional)]
+    on_select: Option<Callback<(f64, f64)>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    let drag_anchor = StoredValue::new(None::<f64>);
+    let drag_preview = RwSignal::new(None::<(f64, f64)>);
     Effect::new(move |_| {
         let peaks = peaks.get();
         let loop_region = loop_region.get();
         let trim = trim.get();
+        let preview = drag_preview.get();
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
@@ -115,7 +150,67 @@ pub fn Waveform(
                 ctx.stroke();
             }
         }
+
+        // ドラッグ中の選択ハイライト
+        if let Some((a, b)) = preview {
+            let x0 = a * w;
+            let x1 = b * w;
+            ctx.set_fill_style_str("rgba(255,255,255,0.14)");
+            ctx.fill_rect(x0, 0.0, (x1 - x0).max(1.0), height);
+            ctx.set_stroke_style_str("rgba(255,255,255,0.55)");
+            ctx.set_line_width(1.0);
+            for x in [x0, x1] {
+                ctx.begin_path();
+                ctx.move_to(x, 0.0);
+                ctx.line_to(x, height);
+                ctx.stroke();
+            }
+        }
     });
 
-    view! { <div class="waveform"><canvas node_ref=canvas_ref></canvas></div> }
+    view! {
+        <div
+            class="waveform"
+            class:waveform--editable=on_select.is_some()
+            on:pointerdown=move |ev| {
+                if on_select.is_none() {
+                    return;
+                }
+                if let Some(frac) = pointer_frac(&ev) {
+                    drag_anchor.set_value(Some(frac));
+                    if let Some(el) = ev
+                        .current_target()
+                        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    {
+                        let _ = el.set_pointer_capture(ev.pointer_id());
+                    }
+                }
+            }
+            on:pointermove=move |ev| {
+                let Some(anchor) = drag_anchor.get_value() else { return };
+                if let Some(frac) = pointer_frac(&ev) {
+                    let (a, b) = ordered(anchor, frac);
+                    drag_preview.set(if b - a >= MIN_DRAG_FRAC { Some((a, b)) } else { None });
+                }
+            }
+            on:pointerup=move |ev| {
+                if let (Some(cb), Some(anchor), Some(frac)) =
+                    (on_select, drag_anchor.get_value(), pointer_frac(&ev))
+                {
+                    let (a, b) = ordered(anchor, frac);
+                    if b - a >= MIN_DRAG_FRAC {
+                        cb.run((a, b));
+                    }
+                }
+                drag_anchor.set_value(None);
+                drag_preview.set(None);
+            }
+            on:pointercancel=move |_| {
+                drag_anchor.set_value(None);
+                drag_preview.set(None);
+            }
+        >
+            <canvas node_ref=canvas_ref></canvas>
+        </div>
+    }
 }

@@ -28,8 +28,47 @@ const SHAPE_OPTIONS: [(&str, &str); 4] = [
     ("saw", "ノコギリ"),
 ];
 
+/// スケール試聴チップ: 基準ピッチからの相対半音数。
+const PREVIEW_OFFSETS: [(i32, &str); 7] = [
+    (-12, "-12"),
+    (-7, "-7"),
+    (-5, "-5"),
+    (0, "基準"),
+    (5, "+5"),
+    (7, "+7"),
+    (12, "+12"),
+];
+
 fn ms(v: f64) -> String {
     format!("{} ms", v as i64)
+}
+
+/// トリム/ループ範囲の最小幅。開始と終了が重なって無音になるのを防ぐ。
+/// 極端に短いクリップでも `clamp(gap, duration)` が `min > max` に
+/// ならないよう、クリップ長を超えない値に抑える。
+fn region_gap(duration: f64) -> f64 {
+    (duration * 0.002).max(0.001).min(duration.max(0.0))
+}
+
+/// 範囲の開始を動かす。終了が近すぎる場合は終了側を押し出す。
+/// core の resolve_trim / resolve_loop と同じく「終了 <= 開始」は
+/// 「クリップ末尾まで」を意味する規約に合わせる。
+fn push_region_start(start: &mut f64, end: &mut f64, v: f64, duration: f64) {
+    let gap = region_gap(duration);
+    *start = v.clamp(0.0, (duration - gap).max(0.0));
+    let end_eff = if *end > *start { *end } else { duration };
+    if end_eff < *start + gap {
+        *end = (*start + gap).min(duration);
+    }
+}
+
+/// 範囲の終了を動かす。開始が近すぎる場合は開始側を押し出す。
+fn push_region_end(start: &mut f64, end: &mut f64, v: f64, duration: f64) {
+    let gap = region_gap(duration);
+    *end = v.clamp(gap, duration);
+    if *end < *start + gap {
+        *start = (*end - gap).max(0.0);
+    }
 }
 
 #[component]
@@ -169,6 +208,25 @@ pub fn SampleInspector() -> impl IntoView {
                     })
                 };
 
+                let region_target = RwSignal::new("trim");
+                let id_drag = id.clone();
+                let on_wave_select = Callback::new(move |(a, b): (f64, f64)| {
+                    let start = a * duration;
+                    let end = b * duration;
+                    let target = region_target.get_untracked();
+                    s.update_sample(&id_drag, move |x| {
+                        if target == "loop" {
+                            x.loop_region.enabled = true;
+                            x.loop_region.start_sec = start;
+                            x.loop_region.end_sec = end;
+                        } else {
+                            x.trim.enabled = true;
+                            x.trim.start_sec = start;
+                            x.trim.end_sec = end;
+                        }
+                    });
+                });
+
                 let id_name = id.clone();
                 let id_name2 = id.clone();
                 let id_preview = id.clone();
@@ -233,7 +291,27 @@ pub fn SampleInspector() -> impl IntoView {
                                 trim=trim_sig
                                 color="#ffb27a".to_string()
                                 height=96.0
+                                on_select=on_wave_select
                             />
+                        </div>
+                        <div class="loopeditor__seltarget">
+                            <span class="panel__muted small">"波形をドラッグして範囲指定:"</span>
+                            <div class="chips chips--inline">
+                                <button
+                                    class="chip chip--mini"
+                                    class:chip--active=move || region_target.get() == "trim"
+                                    on:click=move |_| region_target.set("trim")
+                                >
+                                    "トリム"
+                                </button>
+                                <button
+                                    class="chip chip--mini"
+                                    class:chip--active=move || region_target.get() == "loop"
+                                    on:click=move |_| region_target.set("loop")
+                                >
+                                    "ループ"
+                                </button>
+                            </div>
                         </div>
                         <div class="loopeditor__head">
                             <label class="checkline">
@@ -267,7 +345,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.trim.start_sec = v),
+                                supd!(|x, v| push_region_start(&mut x.trim.start_sec, &mut x.trim.end_sec, v, duration)),
                             )}
                             {range_row(
                                 "トリム終了",
@@ -276,7 +354,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.trim.end_sec = v),
+                                supd!(|x, v| push_region_end(&mut x.trim.start_sec, &mut x.trim.end_sec, v, duration)),
                             )}
                         </div>
                         <div class="loopeditor__head loopeditor__head--gap">
@@ -311,7 +389,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.loop_region.start_sec = v),
+                                supd!(|x, v| push_region_start(&mut x.loop_region.start_sec, &mut x.loop_region.end_sec, v, duration)),
                             )}
                             {range_row(
                                 "ループ終了",
@@ -320,7 +398,7 @@ pub fn SampleInspector() -> impl IntoView {
                                 duration,
                                 duration / 1000.0,
                                 |v| format!("{v:.3}s"),
-                                supd!(|x, v| x.loop_region.end_sec = v),
+                                supd!(|x, v| push_region_end(&mut x.loop_region.start_sec, &mut x.loop_region.end_sec, v, duration)),
                             )}
                         </div>
                     </div>
@@ -355,6 +433,32 @@ pub fn SampleInspector() -> impl IntoView {
                             |v| format!("{} cent", v as i64),
                             supd!(|x, v| x.tune_cents = v),
                         )}
+                    </div>
+
+                    <div class="loopeditor__seltarget">
+                        <span class="panel__muted small" title="基準ピッチからの半音差で試聴">"スケール試聴:"</span>
+                        <div class="chips chips--inline">
+                            {PREVIEW_OFFSETS
+                                .iter()
+                                .map(|&(off, label)| {
+                                    let id_pv = id.clone();
+                                    view! {
+                                        <button
+                                            class="chip chip--mini"
+                                            title="このピッチで試聴"
+                                            on:click=move |_| {
+                                                if let Some(sm) = s.project.with_untracked(|p| find_sample(p, &id_pv)) {
+                                                    let pitch = (sm.base_pitch + off).clamp(0, 127);
+                                                    s.preview_sample_at(sm, Some(pitch));
+                                                }
+                                            }
+                                        >
+                                            {label}
+                                        </button>
+                                    }
+                                })
+                                .collect_view()}
+                        </div>
                     </div>
 
                     <div class="grid2">

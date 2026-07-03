@@ -270,6 +270,9 @@ pub struct Sample {
     pub name: String,
     #[serde(default)]
     pub file_name: String,
+    /// 元ファイルの絶対パス。プロジェクト再読込時に音声を復元するために使う。
+    #[serde(default)]
+    pub source_path: String,
     #[serde(default = "base_pitch_default")]
     pub base_pitch: i32,
     #[serde(default)]
@@ -624,6 +627,14 @@ impl Tempo {
 }
 
 impl Track {
+    /// ノート番号に対して発音に使う素材 ID を返す
+    /// （ノート個別の割り当て → トラック既定素材の順）。
+    pub fn sample_id_for_pitch(&self, pitch: i32) -> Option<&String> {
+        self.note_sample_map
+            .get(&pitch.to_string())
+            .or(self.default_sample_id.as_ref())
+    }
+
     fn validate(&self) -> Result<(), String> {
         range("track.gain", self.gain, 0.0, 4.0)?;
         range("track.pan", self.pan, -1.0, 1.0)?;
@@ -677,8 +688,29 @@ impl Project {
     }
 }
 
+/// ミキサーはテンポ・ノート・オートメーションが時刻順に並んでいることを前提と
+/// するため、外部から読み込んだプロジェクトはここで並び順を保証する。
+fn normalize(project: &mut Project) {
+    project
+        .tempos
+        .sort_by(|a, b| a.time_sec.total_cmp(&b.time_sec));
+    for track in &mut project.tracks {
+        track.notes.sort_by(|a, b| {
+            a.start_sec
+                .total_cmp(&b.start_sec)
+                .then(a.pitch.cmp(&b.pitch))
+        });
+        track.dynamics.volume.sort_by(|a, b| a.t.total_cmp(&b.t));
+        track
+            .dynamics
+            .expression
+            .sort_by(|a, b| a.t.total_cmp(&b.t));
+    }
+}
+
 pub fn parse_project(raw: serde_json::Value) -> Result<Project, String> {
-    let project: Project = serde_json::from_value(raw).map_err(|e| e.to_string())?;
+    let mut project: Project = serde_json::from_value(raw).map_err(|e| e.to_string())?;
+    normalize(&mut project);
     project.validate()?;
     Ok(project)
 }
@@ -704,6 +736,7 @@ pub fn create_sample(id: &str, name: &str) -> Sample {
         id: id.to_string(),
         name: name.to_string(),
         file_name: String::new(),
+        source_path: String::new(),
         base_pitch: DEFAULT_BASE_PITCH,
         tune_cents: 0.0,
         gain: 1.0,
@@ -1069,6 +1102,81 @@ mod tests {
         ] {
             assert!(parse_project(bad).is_err());
         }
+    }
+
+    #[test]
+    fn sample_id_for_pitch_prefers_note_map_over_default() {
+        let project = parse_project(json!({
+            "version": 1, "name": "x",
+            "tracks": [{
+                "id": "t", "name": "t",
+                "defaultSampleId": "base",
+                "noteSampleMap": { "60": "kick" }
+            }]
+        }))
+        .unwrap();
+        let track = &project.tracks[0];
+        assert_eq!(
+            track.sample_id_for_pitch(60).map(String::as_str),
+            Some("kick")
+        );
+        assert_eq!(
+            track.sample_id_for_pitch(61).map(String::as_str),
+            Some("base")
+        );
+
+        let bare = parse_project(
+            json!({ "version": 1, "name": "x", "tracks": [{ "id": "t", "name": "t" }] }),
+        )
+        .unwrap();
+        assert_eq!(bare.tracks[0].sample_id_for_pitch(60), None);
+    }
+
+    #[test]
+    fn source_path_defaults_empty_and_round_trips() {
+        let project = parse_project(
+            json!({ "version": 1, "name": "S", "samples": [{ "id": "s1", "name": "kick" }] }),
+        )
+        .unwrap();
+        assert_eq!(project.samples[0].source_path, "");
+
+        let project = parse_project(json!({
+            "version": 1, "name": "S",
+            "samples": [{ "id": "s1", "name": "kick", "sourcePath": "/tmp/kick.wav" }]
+        }))
+        .unwrap();
+        assert_eq!(project.samples[0].source_path, "/tmp/kick.wav");
+        let v = serde_json::to_value(&project).unwrap();
+        assert_eq!(v["samples"][0]["sourcePath"], "/tmp/kick.wav");
+    }
+
+    #[test]
+    fn parse_normalizes_ordering() {
+        let project = parse_project(json!({
+            "version": 1, "name": "N",
+            "tempos": [{ "timeSec": 4, "bpm": 90 }, { "timeSec": 0, "bpm": 120 }],
+            "tracks": [{
+                "id": "t1", "name": "t",
+                "notes": [
+                    { "pitch": 64, "startSec": 2.0, "durationSec": 1 },
+                    { "pitch": 60, "startSec": 0.5, "durationSec": 1 },
+                    { "pitch": 55, "startSec": 2.0, "durationSec": 1 }
+                ],
+                "dynamics": {
+                    "volume": [{ "t": 3.0, "v": 0.2 }, { "t": 1.0, "v": 0.9 }],
+                    "expression": [{ "t": 2.0, "v": 0.5 }, { "t": 0.0, "v": 1.0 }]
+                }
+            }]
+        }))
+        .unwrap();
+        assert_eq!(project.tempos[0].bpm, 120.0);
+        let notes = &project.tracks[0].notes;
+        assert_eq!(notes[0].pitch, 60);
+        assert_eq!(notes[1].pitch, 55);
+        assert_eq!(notes[2].pitch, 64);
+        let d = &project.tracks[0].dynamics;
+        assert!(d.volume[0].t < d.volume[1].t);
+        assert!(d.expression[0].t < d.expression[1].t);
     }
 
     #[test]
