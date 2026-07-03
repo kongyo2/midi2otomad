@@ -14,6 +14,8 @@ use crate::api::{self, ImportResult, PlayerStatus, ProjectLoad, SampleDto};
 const UNDO_LIMIT: usize = 100;
 /// この時間内の連続編集（スライダードラッグ等）は 1 つの Undo ステップにまとめる。
 const SNAPSHOT_COALESCE_MS: f64 = 400.0;
+/// 履歴破棄をきっかけにしたバンク掃除の最短間隔。
+const PRUNE_THROTTLE_MS: f64 = 30_000.0;
 
 #[derive(Clone, Copy)]
 pub struct Studio {
@@ -33,6 +35,7 @@ pub struct Studio {
     pub undo_stack: RwSignal<Vec<Project>>,
     pub redo_stack: RwSignal<Vec<Project>>,
     last_snapshot_ms: RwSignal<f64>,
+    last_prune_ms: RwSignal<f64>,
 }
 
 fn sample_from_dto(dto: &SampleDto) -> Sample {
@@ -99,6 +102,7 @@ impl Studio {
             undo_stack: RwSignal::new(Vec::new()),
             redo_stack: RwSignal::new(Vec::new()),
             last_snapshot_ms: RwSignal::new(f64::NEG_INFINITY),
+            last_prune_ms: RwSignal::new(f64::NEG_INFINITY),
         }
     }
 
@@ -136,13 +140,24 @@ impl Studio {
             self.last_snapshot_ms.set(f64::NEG_INFINITY);
         }
         let snapshot = self.snapshot();
+        let mut evicted = false;
         self.undo_stack.update(|stack| {
             stack.push(snapshot);
             if stack.len() > UNDO_LIMIT {
                 stack.remove(0);
+                evicted = true;
             }
         });
-        self.redo_stack.update(|stack| stack.clear());
+        let mut redo_dropped = false;
+        self.redo_stack.update(|stack| {
+            redo_dropped = !stack.is_empty();
+            stack.clear();
+        });
+        // 破棄したスナップショットだけが参照していた音声を解放できるよう、
+        // 履歴が捨てられたときはバンク掃除を予約する（スロットル付き）。
+        if evicted || redo_dropped {
+            self.prune_bank(false);
+        }
     }
 
     /// Undo 1 ステップとして記録しつつプロジェクトを編集する。
@@ -254,7 +269,7 @@ impl Studio {
         self.selected_track.set(first_track);
         self.selected_sample.set(first_sample);
         self.mark_dirty();
-        self.prune_bank();
+        self.prune_bank(true);
         if load.missing.is_empty() {
             self.show_toast(format!("プロジェクト「{name}」を読み込みました"));
         } else {
@@ -267,8 +282,14 @@ impl Studio {
 
     /// 現在のプロジェクトと Undo/Redo 履歴のどこからも参照されなくなった
     /// デコード済み音声をバックエンドのバンクから解放する。
-    /// プロジェクト読込のタイミングで呼び、セッション中のメモリ増加を抑える。
-    fn prune_bank(&self) {
+    /// プロジェクト読込 (`force`) と履歴破棄のタイミングで呼び、
+    /// セッション中のメモリ増加を抑える。
+    fn prune_bank(&self, force: bool) {
+        let now = js_sys::Date::now();
+        if !force && now - self.last_prune_ms.get_untracked() < PRUNE_THROTTLE_MS {
+            return;
+        }
+        self.last_prune_ms.set(now);
         let mut keep: HashSet<String> = HashSet::new();
         let collect = |keep: &mut HashSet<String>, p: &Project| {
             keep.extend(p.samples.iter().map(|s| s.id.clone()));
