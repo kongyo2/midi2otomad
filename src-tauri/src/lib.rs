@@ -23,6 +23,9 @@ use player::{Player, PlayerStatus};
 
 const PEAK_BUCKETS: usize = 600;
 const AUDIO_EXTENSIONS: [&str; 8] = ["wav", "mp3", "ogg", "flac", "m4a", "aac", "aif", "aiff"];
+const PROJECT_EXTENSION: &str = "m2oproj";
+/// mixer::MAX_LAYERS と同じ上限。プレビューに含めるレイヤー数を抑える。
+const MAX_PREVIEW_LAYERS: usize = 8;
 
 pub struct AppState {
     bank: Mutex<HashMap<String, PcmAudio>>,
@@ -63,6 +66,7 @@ pub struct SampleDto {
     id: String,
     name: String,
     file_name: String,
+    source_path: String,
     duration_sec: f64,
     peaks: Vec<f32>,
 }
@@ -80,6 +84,15 @@ pub struct ImportResult {
 pub struct IngestResult {
     import: Option<ImportResult>,
     samples: Vec<SampleDto>,
+    loaded: Option<ProjectLoad>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectLoad {
+    project: Project,
+    samples: Vec<SampleDto>,
+    missing: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -119,9 +132,36 @@ fn is_midi(path: &std::path::Path) -> bool {
     )
 }
 
+fn is_project_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+        == Some(PROJECT_EXTENSION)
+}
+
+/// OS のファイル名として使えない文字を除去する（保存/書き出しダイアログの初期名用）。
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "音MAD".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn decode_and_store(state: &AppState, path: &std::path::Path) -> Result<SampleDto, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let pcm = decode_audio(&bytes)?;
+    let pcm = decode_audio(&bytes)
+        .map_err(|e| format!("{} をデコードできませんでした: {e}", file_stem_name(path)))?;
     let id = make_id("sample");
     let peaks = build_waveform_peaks(&pcm, PEAK_BUCKETS);
     let duration_sec = pcm.duration_sec();
@@ -139,8 +179,58 @@ fn decode_and_store(state: &AppState, path: &std::path::Path) -> Result<SampleDt
         id,
         name,
         file_name,
+        source_path: path.display().to_string(),
         duration_sec,
         peaks,
+    })
+}
+
+/// プロジェクトファイル (.m2oproj) を読み込み、参照されている音声素材を
+/// `sourcePath` から再デコードしてバンクへ格納する。
+fn load_project_from_path(state: &AppState, path: &std::path::Path) -> Result<ProjectLoad, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("プロジェクトを読み込めませんでした: {e}"))?;
+    let raw: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("プロジェクトの JSON 解析に失敗しました: {e}"))?;
+    let mut project = parse_project(raw)?;
+
+    let mut samples = Vec::new();
+    let mut missing = Vec::new();
+    {
+        let mut bank = state
+            .bank
+            .lock()
+            .map_err(|_| "バンクのロックに失敗".to_string())?;
+        for sample in &mut project.samples {
+            if sample.source_path.is_empty() {
+                missing.push(sample.name.clone());
+                continue;
+            }
+            let source = std::path::Path::new(&sample.source_path);
+            let decoded = std::fs::read(source)
+                .ok()
+                .and_then(|b| decode_audio(&b).ok());
+            match decoded {
+                Some(pcm) => {
+                    sample.duration_sec = pcm.duration_sec();
+                    samples.push(SampleDto {
+                        id: sample.id.clone(),
+                        name: sample.name.clone(),
+                        file_name: sample.file_name.clone(),
+                        source_path: sample.source_path.clone(),
+                        duration_sec: sample.duration_sec,
+                        peaks: build_waveform_peaks(&pcm, PEAK_BUCKETS),
+                    });
+                    bank.insert(sample.id.clone(), pcm);
+                }
+                None => missing.push(sample.name.clone()),
+            }
+        }
+    }
+    Ok(ProjectLoad {
+        project,
+        samples,
+        missing,
     })
 }
 
@@ -218,6 +308,20 @@ fn ingest_paths(
     previous: Option<Project>,
     mode: Option<String>,
 ) -> Result<IngestResult, String> {
+    // プロジェクトファイルが含まれていれば、それがすべてを置き換える。
+    if let Some(project_path) = paths
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| is_project_file(p))
+    {
+        let loaded = load_project_from_path(&state, &project_path)?;
+        return Ok(IngestResult {
+            import: None,
+            samples: Vec::new(),
+            loaded: Some(loaded),
+        });
+    }
+
     let import_mode = ImportMode::from_str_or_auto(mode.as_deref().unwrap_or("auto"));
     let mut import = None;
     let mut samples = Vec::new();
@@ -242,14 +346,43 @@ fn ingest_paths(
             samples.push(decode_and_store(&state, &path)?);
         }
     }
-    Ok(IngestResult { import, samples })
+    Ok(IngestResult {
+        import,
+        samples,
+        loaded: None,
+    })
 }
 
 #[tauri::command]
-fn remove_sample(state: State<AppState>, id: String) {
-    if let Ok(mut bank) = state.bank.lock() {
-        bank.remove(&id);
-    }
+fn save_project(app: AppHandle, project: Project) -> Result<Option<String>, String> {
+    let suggested = format!("{}.{PROJECT_EXTENSION}", sanitize_file_name(&project.name));
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested)
+        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION, "json"])
+        .blocking_save_file();
+    let Some(target) = picked else {
+        return Ok(None);
+    };
+    let path = target.into_path().map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(&project).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("保存に失敗しました: {e}"))?;
+    Ok(Some(path.display().to_string()))
+}
+
+#[tauri::command]
+fn load_project(app: AppHandle, state: State<AppState>) -> Result<Option<ProjectLoad>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("midi2otomad プロジェクト", &[PROJECT_EXTENSION, "json"])
+        .blocking_pick_file();
+    let Some(file) = picked else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    load_project_from_path(&state, &path).map(Some)
 }
 
 #[derive(Serialize)]
@@ -325,6 +458,7 @@ fn quality_for(performance: bool) -> RenderQuality {
 fn preview_sample(
     state: State<AppState>,
     mut sample: Sample,
+    layers: Option<Vec<Sample>>,
     pitch: Option<i32>,
     performance: Option<bool>,
 ) -> Result<(), String> {
@@ -359,12 +493,23 @@ fn preview_sample(
         sample.one_shot = false;
         sample.loop_region.enabled = false;
     }
-    let sample_value = serde_json::to_value(&sample).map_err(|e| e.to_string())?;
+    // レイヤー先の素材も同梱してプレビューでも重ねて鳴らす。
+    let mut sample_values = vec![serde_json::to_value(&sample).map_err(|e| e.to_string())?];
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(sample.id.clone());
+    for layer in layers.unwrap_or_default() {
+        if sample_values.len() > MAX_PREVIEW_LAYERS {
+            break;
+        }
+        if seen.insert(layer.id.clone()) {
+            sample_values.push(serde_json::to_value(&layer).map_err(|e| e.to_string())?);
+        }
+    }
     let project = parse_project(json!({
         "version": 1,
         "name": "preview",
         "sampleRate": 48000,
-        "samples": [sample_value],
+        "samples": sample_values,
         "tracks": [{
             "id": "preview",
             "name": "preview",
@@ -438,6 +583,13 @@ fn seek(state: State<AppState>, sec: f64) {
 }
 
 #[tauri::command]
+fn set_loop(state: State<AppState>, enabled: bool) {
+    if let Some(player) = &state.player {
+        player.set_looping(enabled);
+    }
+}
+
+#[tauri::command]
 fn status(state: State<AppState>) -> PlayerStatus {
     state
         .player
@@ -475,15 +627,11 @@ fn export(
     } else {
         "wav"
     };
-    let suggested = if request
-        .project
-        .name
-        .to_lowercase()
-        .ends_with(&format!(".{ext}"))
-    {
-        request.project.name.clone()
+    let base = sanitize_file_name(&request.project.name);
+    let suggested = if base.to_lowercase().ends_with(&format!(".{ext}")) {
+        base
     } else {
-        format!("{}.{ext}", request.project.name)
+        format!("{base}.{ext}")
     };
     let picked = app
         .dialog()
@@ -496,13 +644,18 @@ fn export(
     };
     let path = target.into_path().map_err(|e| e.to_string())?;
 
+    let bit_depth = match request.wav_bit_depth.unwrap_or(24) {
+        16 => 16,
+        32 => 32,
+        _ => 24,
+    };
     let bytes = if ext == "wav" {
         encode_wav(
             mix.sample_rate as u32,
             &mix.left,
             &mix.right,
             mix.frames,
-            request.wav_bit_depth.unwrap_or(24),
+            bit_depth,
         )
     } else {
         encode_mp3_bytes(&mix, request.mp3_bitrate.unwrap_or(320))?
@@ -535,7 +688,8 @@ pub fn run() {
             open_midi,
             open_audio,
             ingest_paths,
-            remove_sample,
+            save_project,
+            load_project,
             detect_pitch,
             preview_sample,
             set_mix,
@@ -543,6 +697,7 @@ pub fn run() {
             pause,
             stop,
             seek,
+            set_loop,
             status,
             export
         ])
@@ -577,6 +732,27 @@ mod tests {
         assert!(!is_midi(Path::new("song.mp3")));
         assert!(!is_midi(Path::new("song")));
         assert!(!is_midi(Path::new("midi")));
+    }
+
+    #[test]
+    fn is_project_file_matches_extension() {
+        assert!(is_project_file(Path::new("song.m2oproj")));
+        assert!(is_project_file(Path::new("/a/b/Song.M2OPROJ")));
+        assert!(!is_project_file(Path::new("song.json")));
+        assert!(!is_project_file(Path::new("song.mid")));
+    }
+
+    #[test]
+    fn sanitize_file_name_strips_invalid_characters() {
+        assert_eq!(sanitize_file_name("my song"), "my song");
+        assert_eq!(
+            sanitize_file_name("a/b\\c:d*e?f\"g<h>i|j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+        assert_eq!(sanitize_file_name("  .hidden.  "), "hidden");
+        assert_eq!(sanitize_file_name(""), "音MAD");
+        assert_eq!(sanitize_file_name("..."), "音MAD");
+        assert_eq!(sanitize_file_name("曲名 (final).v2"), "曲名 (final).v2");
     }
 
     #[test]
